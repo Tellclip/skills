@@ -1,0 +1,20 @@
+{
+  "name": "tellclip",
+  "displayName": "Tellclip",
+  "version": "0.2.0",
+  "description": "Beautiful screen recordings for agents. Bundles the tellclip CLI and the demo-recording skill.",
+  "author": {
+    "name": "Tellclip",
+    "url": "https://tellclip.com"
+  },
+  "homepage": "https://tellclip.com",
+  "repository": "https://github.com/Tellclip/skills",
+  "license": "MIT",
+  "keywords": [
+    "screen-recording",
+    "screencast",
+    "demo",
+    "video",
+    "macos"
+  ]
+}

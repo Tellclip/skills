@@ -1,0 +1,29 @@
+{
+  "name": "tellclip",
+  "owner": {
+    "name": "Tellclip",
+    "url": "https://tellclip.com"
+  },
+  "description": "Beautiful screen recordings for agents.",
+  "plugins": [
+    {
+      "name": "tellclip",
+      "source": {
+        "source": "github",
+        "repo": "Tellclip/skills"
+      },
+      "description": "Beautiful screen recordings for agents — record a flow, get a polished, shareable clip.",
+      "version": "0.2.0",
+      "category": "productivity",
+      "keywords": [
+        "screen-recording",
+        "screencast",
+        "demo",
+        "video",
+        "macos"
+      ],
+      "homepage": "https://tellclip.com",
+      "license": "MIT"
+    }
+  ]
+}

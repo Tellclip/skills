@@ -1,0 +1,26 @@
+#!/bin/sh
+# Puts the bundled tellclip CLI on the Bash tool's PATH while this plugin is
+# enabled, so `tellclip …` works with no separate `npm i -g tellclip`.
+#
+# Resolve through the script's own location rather than $CLAUDE_PLUGIN_ROOT:
+# the marketplace cache path is version-stamped and changes on every update,
+# and that variable is only guaranteed for MCP/hook configs.
+set -e
+
+# .mjs, not .js: the bundle is ESM and there is no package.json beside it, so
+# a .js extension makes node print a MODULE_TYPELESS_PACKAGE_JSON warning on
+# every single invocation — dozens of them inside one recorded take.
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+bundle="$here/../vendor/tellclip.mjs"
+
+if [ ! -f "$bundle" ]; then
+  echo "tellclip: bundle missing at $bundle — reinstall the plugin (/plugin install tellclip@tellclip)." >&2
+  exit 1
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "tellclip: node 20+ is required and was not found on PATH. Install Node, or use the standalone CLI: npm i -g tellclip" >&2
+  exit 1
+fi
+
+exec node "$bundle" "$@"

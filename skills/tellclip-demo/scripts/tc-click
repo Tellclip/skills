@@ -1,0 +1,33 @@
+#!/bin/bash
+# tc-click <selector-or-@ref> "<mark label>"
+#
+# Click an element via agent-browser and drop a positioned tellclip mark at
+# the element's center — one command per demo beat. The mark is stamped by
+# the Tellclip app right after the click lands (~100 ms), with the position
+# mapped from viewport CSS px into window-normalized top-left coordinates
+# (the chrome offset is measured live, so it adapts to any window chrome).
+set -euo pipefail
+
+if [ $# -lt 2 ]; then
+  echo 'usage: tc-click <selector-or-@ref> "<mark label>"' >&2
+  exit 2
+fi
+
+sel="$1"
+label="$2"
+
+box=$(agent-browser get box "$sel" --json)
+if [ "$(printf '%s' "$box" | jq -r '.success')" != "true" ]; then
+  printf '%s\n' "$box" >&2
+  exit 1
+fi
+
+geo=$(agent-browser eval 'JSON.stringify({t:outerHeight-innerHeight,ow:outerWidth,oh:outerHeight})' --json | jq -r '.data.result')
+
+at=$(jq -rn --argjson b "$(printf '%s' "$box" | jq '.data')" --argjson g "$geo" '
+  def r4: (. * 10000 | round) / 10000;
+  "\((($b.x + $b.width / 2) / $g.ow) | r4),\((($g.t + $b.y + $b.height / 2) / $g.oh) | r4)"')
+
+# Keep stdout pure JSON (the mark) — agent-browser's status line goes to stderr.
+agent-browser click "$sel" >&2
+tellclip mark "$label" --at "$at"
