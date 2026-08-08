@@ -13,7 +13,7 @@
         "repo": "Tellclip/skills"
       },
       "description": "Beautiful screen recordings for agents — record a flow, get a polished, shareable clip.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "category": "productivity",
       "keywords": [
         "screen-recording",

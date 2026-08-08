@@ -1,7 +1,7 @@
 {
   "name": "tellclip",
   "displayName": "Tellclip",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Beautiful screen recordings for agents. Bundles the tellclip CLI and the demo-recording skill.",
   "author": {
     "name": "Tellclip",
