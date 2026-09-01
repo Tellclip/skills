@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "tellclip": {
+      "type": "http",
+      "url": "https://tellclip.com/mcp"
+    }
+  }
+}

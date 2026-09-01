@@ -4,23 +4,25 @@
     "name": "Tellclip",
     "url": "https://tellclip.com"
   },
-  "description": "Beautiful screen recordings for agents.",
+  "description": "Beautiful screen recordings and shared clip workflows for agents.",
   "plugins": [
     {
       "name": "tellclip",
       "source": {
         "source": "github",
-        "repo": "Tellclip/skills"
+        "repo": "Tellclip/skills",
+        "ref": "v0.2.2"
       },
-      "description": "Beautiful screen recordings for agents — record a flow, get a polished, shareable clip.",
-      "version": "0.2.1",
+      "description": "Record polished demos and work with shared Tellclip clips through MCP.",
+      "version": "0.2.2",
       "category": "productivity",
       "keywords": [
         "screen-recording",
         "screencast",
         "demo",
-        "video",
-        "macos"
+        "clip",
+        "macos",
+        "mcp"
       ],
       "homepage": "https://tellclip.com",
       "license": "MIT"

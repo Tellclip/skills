@@ -1,0 +1,21 @@
+{
+  "name": "tellclip",
+  "interface": {
+    "displayName": "Tellclip"
+  },
+  "plugins": [
+    {
+      "name": "tellclip",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/Tellclip/skills.git",
+        "ref": "v0.2.2"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

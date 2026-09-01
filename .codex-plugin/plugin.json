@@ -1,0 +1,41 @@
+{
+  "name": "tellclip",
+  "version": "0.2.2",
+  "description": "Tellclip workflows for agents: a demo-recording skill and hosted MCP for shared clips. Local recording uses the separately installed Tellclip CLI.",
+  "author": {
+    "name": "Tellclip",
+    "url": "https://tellclip.com"
+  },
+  "homepage": "https://tellclip.com",
+  "repository": "https://github.com/Tellclip/skills",
+  "license": "MIT",
+  "keywords": [
+    "screen-recording",
+    "screencast",
+    "demo",
+    "clip",
+    "macos",
+    "mcp"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Tellclip",
+    "shortDescription": "Record demos and work with shared clips",
+    "longDescription": "Record polished product demos from macOS, then find, review, organize, and comment on shared Tellclip clips.",
+    "developerName": "Tellclip",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://tellclip.com",
+    "privacyPolicyURL": "https://tellclip.com/privacy",
+    "termsOfServiceURL": "https://tellclip.com/terms",
+    "defaultPrompt": [
+      "Record and share a product demo with Tellclip",
+      "Summarize feedback on my latest Tellclip clip",
+      "Find a Tellclip clip and get its transcript"
+    ]
+  }
+}

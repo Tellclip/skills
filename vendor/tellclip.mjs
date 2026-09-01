@@ -257,6 +257,27 @@ it (browser or any app), then polishing and sharing the result. Every command
 prints one JSON object. Errors look like {"error":{"code","message","next"}} \u2014
 \`next\` always tells you the recovery step.
 
+## Skill, CLI, and MCP \u2014 route the work correctly
+
+- The \`tellclip-demo\` skill routes the task and teaches the workflow. It does
+  not execute the work itself.
+- This CLI controls a recording or draft on this Mac: capture, cursor and zoom
+  edits, cuts, speed changes, metadata, rendering, saving, and sharing.
+- Tellclip's hosted MCP works with authenticated organization data: members,
+  workspaces, uploaded clips, transcripts, frames, comments, and
+  organization-side clip settings.
+
+The CLI cannot browse the organization.
+MCP cannot record or edit a local draft. Neither substitutes for the other.
+
+Authentication is separate too.
+\`tellclip login\` signs in the local app/CLI session used by \`tellclip share\`.
+It does not authenticate the hosted MCP. For MCP OAuth, use \`/mcp\` or
+\`claude mcp login tellclip\` in Claude Code,
+\`codex mcp login tellclip\` in Codex, or
+\`cursor-agent mcp login tellclip\` in Cursor. Authenticate when organization
+tools are needed.
+
 A demo is a TAKE, not a transcript of your tool calls. The whole difference
 between a clip that reads as human-made and one that reads as bot-made is
 pacing and restraint, and both are decided before you press record.
@@ -432,6 +453,14 @@ one per meaningful hover.
   to the latest session; pass --session <id> when working with several takes.
   Only the newest 10 sessions are kept.
 
+## Title and summary
+
+Before sharing, set both: \`tellclip title "..."\` gives the clip a short,
+specific name (120 characters maximum), while \`tellclip summary "..."\` gives
+viewers 2-4 sentences about what the clip demonstrates. Ground the summary in
+what you actually showed and said; omit padding, invented claims, and "In this
+video..." boilerplate. Run \`tellclip edits\` to read both back, then share.
+
 ## Closing the loop \u2014 QA before you hand over a URL
 
 The edit is not the deliverable; the rendered clip is. Check it:
@@ -453,7 +482,8 @@ browser sign-in (a human completes it once, within 10 minutes) and returns
 to be running \u2014 without it the CLI runs the browser flow itself and the app
 adopts the sign-in when it next starts. The session persists across app
 launches; \`tellclip status\` reports \`signed_in\`, and \`tellclip logout\`
-signs out. Re-running share on the same session replaces
+signs out. This session is unrelated to hosted MCP OAuth. Re-running share on
+the same session replaces
 the clip at the SAME URL \u2014 safe to iterate. \`tellclip save --out demo.mp4\`
 renders locally without uploading. \`tellclip preview\` opens the human
 editor; close it before running more CLI edits.`;
@@ -691,6 +721,11 @@ function makeRequestSpec(command, args) {
         throw new UsageError('title needs the text: tellclip title "Onboarding demo".');
       }
       return editSpec("title", parsed, { text: parsed.positional[0] });
+    case "summary":
+      if (parsed.positional.length !== 1) {
+        throw new UsageError('summary needs the text: tellclip summary "Shows the onboarding flow.".');
+      }
+      return editSpec("summary", parsed, { text: parsed.positional[0] });
     case "suggest": {
       const fields = {};
       const minStill = parsed.options.get("--min-still");
@@ -889,6 +924,7 @@ USAGE
   tellclip cut <start> <end> [--session <s>]
   tellclip speed <start> <end> <rate> [--session <s>]
   tellclip title <text> [--session <s>]
+  tellclip summary <text> [--session <s>]
   tellclip edits | marks [--session <s>]
   tellclip frame <seconds> [--out <path>] [--session <s>]
   tellclip cursor set [--file <path>] [--from-marks] [--session <s>]

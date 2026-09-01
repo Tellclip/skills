@@ -1,13 +1,14 @@
 ---
 name: tellclip-demo
 description: >
-  Record, edit, and publish a product demo video with the `tellclip` CLI while
+  Record, edit, and publish a product demo clip with the `tellclip` CLI while
   driving a browser with `agent-browser`. Use when asked to record a demo,
   capture a product walkthrough, make a marketing clip of a flow, or share a
   screen recording of automated actions. Covers staging the demo state,
   rehearsing before the take, recording the whole flow in one shell
   invocation with human pacing, clean-browser launch, precise timing via
   chained marks, authored cursor tracks, zoom/cut/speed edits, and upload.
+  Records real product environments only — a mock needs explicit approval.
 ---
 
 # Recording a product demo with tellclip
@@ -15,6 +16,30 @@ description: >
 `tellclip` remote-controls the Tellclip macOS app. Every command prints one
 JSON object; errors carry `{"error":{code,message,next}}` where `next` is the
 recovery step — follow it. Full contract: run `tellclip guide`.
+
+## Route work to the correct Tellclip interface
+
+This skill is the router and workflow guide. It does not execute recording or
+organization operations itself.
+
+- The `tellclip` **CLI** controls a recording or draft on this Mac. Use it to
+  choose a capture target, record, stop, add cursor and zoom edits, cut or
+  speed up ranges, set the title and summary, render, save, and share.
+- The hosted Tellclip **MCP** works with authenticated organization data. Use
+  its tools for members, workspaces, uploaded clips, transcripts, frames,
+  comments, and organization-side clip settings. It cannot record or edit a
+  local draft.
+
+The CLI cannot browse the organization. MCP cannot record or edit a local
+draft. They are complementary; never substitute one for the other.
+
+Their authentication is separate. `tellclip login` signs in the local app/CLI
+session used by `tellclip share`; it does not authenticate the hosted MCP. For
+MCP OAuth, use `/mcp` or `claude mcp login tellclip` in Claude Code,
+`codex mcp login tellclip` in Codex, or `cursor-agent mcp login tellclip` in Cursor.
+Authenticate when the task needs organization tools.
+
+Everything below is the CLI workflow for recording and editing a local draft.
 
 Drive the browser with `agent-browser` (Vercel's agent CLI). Because both
 tools are bash commands, actions, marks and sleeps chain inside a single
@@ -34,12 +59,58 @@ single script it ran 23s raw / 13s cut.
   then `agent-browser install` once to download its browser.
 - `jq` (used by the bundled helper).
 
+## 0. Pick the environment — real, or stop
+
+A demo is evidence the product works, so what you record must BE the
+product. Real means it runs the product's actual code. Walk this ladder in
+order and take the first rung that holds:
+
+1. **Already running.** The real product surface is reachable now — the
+   production or staging URL, or the app already running on this machine.
+   Confirm with the human WHICH url is the real product surface (not the
+   marketing page, not a stale preview deploy).
+2. **You can start it.** A real environment you can bring up yourself — the
+   repo's dev server, a seeded staging deploy. Start it and load the flow's
+   first screen before going further.
+3. **Neither → STOP and ask.** Tell the human what you tried and what is
+   missing, and ask which environment to record. Do not launch, stage, or
+   record anything until they answer.
+
+HARD GATE: never build a mock, prototype, or stand-in page as the recording
+target unless the human explicitly approved that in THIS conversation.
+"It would look the same", a deadline, or rungs 1–2 failing are not
+approval — they are rung 3. An approved mock must say it is one: put
+"mock" in the `tellclip title`, and say so again when you hand over the
+share URL.
+
+**Scenario — no usable environment (regression check).** "Record a demo of
+the new checkout" and nothing runs: no dev server, no staging, no signed-in
+session. An agent once solved this by writing a local HTML page that looked
+like the product and recording it — the clip shipped as if real, demoing
+software that did not exist. On this rung the fast move is the wrong move:
+stop and ask (rung 3). Building the page first and asking later — or not at
+all — is the exact failure this gate exists to prevent.
+
 ## Launch a clean capture browser
+
+`<url>` is the surface picked in step 0.
 
 ```
 agent-browser open <url> --headed --args "--disable-infobars,about:blank"
 agent-browser set viewport 1600 900
 ```
+
+`set viewport` is a request, not a fact: the window can clamp to the screen
+or keep its old size, and every downstream number — marks, zoom targets,
+framing — silently drifts when the real size differs from the one you set.
+Read it back and require an exact match before recording:
+
+```
+agent-browser eval 'JSON.stringify({iw:innerWidth,ih:innerHeight,ow:outerWidth,oh:outerHeight})'
+```
+
+`iw`×`ih` must equal the viewport you set. If it does not, pick a size the
+screen actually fits and re-verify — never compensate in coordinates.
 
 The `--args` string is load-bearing: `--disable-infobars` suppresses the
 "Chrome for Testing is only for automated testing" banner, `about:blank`
@@ -48,23 +119,45 @@ prevents a stray "New Tab" tab in the tab strip. CRITICAL: every later
 `--headed --args "..."` flags — agent-browser relaunches the browser when
 launch flags change, which brings the banner and stray tab back. Verify the
 window is clean during rehearsal with a throwaway session — `tellclip record
---window <id>`, `tellclip stop`, `tellclip frame 0.5` — and look at the PNG.
+--window <id>`, `tellclip stop`, `tellclip frame 0.5` — and look at the PNG:
+clean window, and the size you set (a Retina capture is 2× the point size).
+
+## The human keeps working — never interrupt them
+
+The take runs on the human's machine while they use it. Their focus,
+cursor, and keyboard are untouchable — a demo that hijacks the screen is a
+failed demo even if the clip is perfect.
+
+- CDP input needs no focus: the capture window can sit BEHIND the human's
+  windows for the whole take and still record. Never activate or raise it,
+  and never send OS-level mouse or keyboard events — the authored cursor
+  track (below) exists precisely so the real cursor never has to move.
+- Launch and size the capture browser ONCE, up front — that launch is the
+  one focus steal the human expects. A mid-take relaunch (the launch-flags
+  trap above) flashes a fresh window at them on top of wrecking the take.
+- UI that must appear in front of them — `tellclip login`'s browser
+  sign-in, `tellclip preview` — is setup, agreed with the human first,
+  never sprung mid-work.
 
 ## 1. Stage the demo state
 
 Nothing downstream catches a badly staged app — it costs a whole take.
 
-- Log in before recording; confirm with the human WHICH url is the real
-  product surface (not the marketing page, not a stale preview deploy).
+- Log in before recording.
 - Delete stale entities so the flow starts from a clean slate.
 - Seed data so no empty state, error, or "contact sales" fallback appears on
-  camera. Walk each screen the take will visit and look at it.
+  camera — real records created in the step-0 environment, never substitute
+  UI. Walk each screen the take will visit and look at it.
 
 ## 2. Rehearse with the recorder OFF
 
 Walk the entire flow once, collecting what the take needs: element refs,
-scroll targets, coordinates. Two things to verify as you go:
+scroll targets, coordinates. Three things to verify as you go:
 
+- **Every screen and action in the take exists in the step-0 environment.**
+  The rehearsal is where the flow proves it is real. A missing screen,
+  button, or state is a step-0 problem — go back and ask the human; never
+  fill the gap with a mocked page or a hand-built stand-in.
 - **Every click actually mutated the UI.** `agent-browser click` dispatches
   real CDP input, so it works — but a click on a mispicked ref, or any
   synthetic `el.click()`, silently no-ops on Radix / Headless UI menus: the
@@ -190,15 +283,28 @@ take and a 13s one.
 
 - `tellclip speed <start> <end> 3` fast-forwards boring stretches (forms,
   loading) — better than cutting when the viewer should see it happen.
-- `tellclip title "..."` names the clip; `tellclip preview` opens the human
-  editor (close it before further CLI edits).
+- `tellclip preview` opens the human editor (close it before further CLI
+  edits).
+
+## Title and summary
+
+After recording, set both before sharing.
+
+- Title: `tellclip title "..."` — a short name for what the clip shows, at
+  most 120 characters.
+- Summary: `tellclip summary "..."` — 2-4 viewer-facing sentences describing
+  what the clip demonstrates. Write from the take you just performed. Check
+  it against what was actually said (the transcript becomes captions) and the
+  distinct parts shown (they become chapters). No padding, invented claims,
+  or "In this video..." boilerplate.
 
 ## Gotchas
 
 - Only the newest 10 sessions are kept — share or save before recording many
   takes. Address older takes with `--session <id>` (every response echoes it).
 - `share` needs the app signed in once: run `tellclip login` (opens a browser
-  sign-in a human completes; `tellclip status` reports `signed_in`);
+  sign-in a human completes; `tellclip status` reports `signed_in`). This is
+  the app/CLI share session, not hosted MCP OAuth;
   `save` additionally needs a paid plan. Both report structured errors with
   the fix in `next`.
 - The Tellclip app must be running; the CLI auto-launches it if not.
