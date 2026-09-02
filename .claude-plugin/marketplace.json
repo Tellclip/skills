@@ -11,10 +11,10 @@
       "source": {
         "source": "github",
         "repo": "Tellclip/skills",
-        "ref": "v0.2.2"
+        "ref": "v0.2.3"
       },
       "description": "Record polished demos and work with shared Tellclip clips through MCP.",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "category": "productivity",
       "keywords": [
         "screen-recording",

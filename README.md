@@ -17,8 +17,8 @@ Download the app: <https://tellclip.com/download-app>
 ## Two interfaces, two jobs
 
 - The `tellclip` **CLI** controls a recording or draft on this Mac. Use it to
-  record, add cursor and zoom edits, cut or speed up ranges, render, save, and
-  share.
+  record, add cursor and zoom edits, cut or speed up ranges, author timed
+  transcript cues after the edit, render, save, and share.
 - The hosted **MCP** shows what is happening in the authenticated Tellclip
   organization. Use it for members, workspaces, uploaded clips, transcripts,
   frames, comments, and organization-side clip settings.

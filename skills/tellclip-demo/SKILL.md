@@ -7,7 +7,8 @@ description: >
   screen recording of automated actions. Covers staging the demo state,
   rehearsing before the take, recording the whole flow in one shell
   invocation with human pacing, clean-browser launch, precise timing via
-  chained marks, authored cursor tracks, zoom/cut/speed edits, and upload.
+  chained marks, authored cursor and transcript tracks, zoom/cut/speed edits,
+  and upload.
   Records real product environments only — a mock needs explicit approval.
 ---
 
@@ -24,7 +25,8 @@ organization operations itself.
 
 - The `tellclip` **CLI** controls a recording or draft on this Mac. Use it to
   choose a capture target, record, stop, add cursor and zoom edits, cut or
-  speed up ranges, set the title and summary, render, save, and share.
+  speed up ranges, author timed transcript cues, set the title and summary,
+  render, save, and share.
 - The hosted Tellclip **MCP** works with authenticated organization data. Use
   its tools for members, workspaces, uploaded clips, transcripts, frames,
   comments, and organization-side clip settings. It cannot record or edit a
@@ -138,6 +140,13 @@ failed demo even if the clip is perfect.
 - UI that must appear in front of them — `tellclip login`'s browser
   sign-in, `tellclip preview` — is setup, agreed with the human first,
   never sprung mid-work.
+- Tellclip holds up its end: a CLI take launches the app hidden, shows no
+  recorder UI, and never captures the microphone or camera (system audio
+  is opt-in via `--system-audio`). Only the menu bar shows the running
+  take.
+- The machine stays theirs mid-take: they can still take screenshots, and
+  they can stop your recording from the menu bar — if they do, your next
+  command reports `not_recording`; do not fight it, ask before re-recording.
 
 ## 1. Stage the demo state
 
@@ -215,12 +224,34 @@ are for.
    action. Animated content (looping video, spinners) is never flagged, so
    judge those stretches yourself. `tellclip edits` after each mutation.
 
-## 5. QA, then publish
+## 5. Author the transcript after the edit
+
+The transcript is post-factum metadata for the finished take. Do not narrate
+tool calls or try to build it while recording. After cuts and speed edits are
+final, add concise viewer-facing cues at the places where they help:
+
+```sh
+printf '%s' '{"cues":[{"start":2.4,"end":4.8,"text":"Open Settings."}]}' \
+  | tellclip transcript set
+tellclip transcript list
+```
+
+Cue times are source recording seconds, like marks and edits. Tellclip maps
+them through cuts and speed changes for the shared clip; `caption_cues` in the
+`list` result shows those final viewer times. Supply the complete cue track on
+every `set` — it atomically replaces the previous authored track. Keep cues
+ordered and normally non-overlapping. An authored track becomes the clip's
+captions; `tellclip transcript clear` removes it and restores the generated
+microphone transcript when one exists.
+
+## 6. QA, then publish
 
 The edit is not the deliverable; the rendered clip is.
 
 - `tellclip edits` → `edited_duration_seconds` against your target, and
   `kept_ranges` / `zoom_ranges` against what you meant to build.
+- `tellclip transcript list` → the intended source `cues`, projected
+  `caption_cues`, and `omitted_cue_count == 0`.
 - `tellclip frame <t>` at each mark → right page, right state, nothing
   half-rendered. (Raw capture, so it checks content, not the styled render.)
 - Need the final framing checked? `tellclip save --out demo.mp4` and pull
@@ -293,10 +324,9 @@ After recording, set both before sharing.
 - Title: `tellclip title "..."` — a short name for what the clip shows, at
   most 120 characters.
 - Summary: `tellclip summary "..."` — 2-4 viewer-facing sentences describing
-  what the clip demonstrates. Write from the take you just performed. Check
-  it against what was actually said (the transcript becomes captions) and the
-  distinct parts shown (they become chapters). No padding, invented claims,
-  or "In this video..." boilerplate.
+  what the clip demonstrates. Write from the take you just performed and
+  check it against the distinct parts shown. No padding, invented claims, or
+  "In this video..." boilerplate.
 
 ## Gotchas
 

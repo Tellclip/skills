@@ -1,6 +1,6 @@
 {
   "name": "tellclip",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Tellclip workflows for agents: a demo-recording skill and hosted MCP for shared clips. Local recording uses the separately installed Tellclip CLI.",
   "author": {
     "name": "Tellclip",

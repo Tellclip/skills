@@ -257,12 +257,21 @@ it (browser or any app), then polishing and sharing the result. Every command
 prints one JSON object. Errors look like {"error":{"code","message","next"}} \u2014
 \`next\` always tells you the recovery step.
 
+CLI recordings are invisible on the host machine: the app launches hidden, no
+recorder UI appears, and nothing steals the human's focus \u2014 only the menu bar
+shows the running take. They are also always silent on input: the microphone
+and camera are never captured (\`--system-audio\` opts into app sound); the
+narration is the authored transcript. The human can still take screenshots
+during your take, and can stop it from the menu bar \u2014 your next command then
+reports \`not_recording\`.
+
 ## Skill, CLI, and MCP \u2014 route the work correctly
 
 - The \`tellclip-demo\` skill routes the task and teaches the workflow. It does
   not execute the work itself.
 - This CLI controls a recording or draft on this Mac: capture, cursor and zoom
-  edits, cuts, speed changes, metadata, rendering, saving, and sharing.
+  edits, cuts, speed changes, an authored timed transcript, metadata,
+  rendering, saving, and sharing.
 - Tellclip's hosted MCP works with authenticated organization data: members,
   workspaces, uploaded clips, transcripts, frames, comments, and
   organization-side clip settings.
@@ -292,8 +301,10 @@ pacing and restraint, and both are decided before you press record.
 5. \`tellclip suggest\` \u2014 the app detects stretches where nothing on screen
    moved and returns cut ranges that route around your zooms. Review each
    against meaning, then apply with \`tellclip cut\` or \`suggest --apply\`.
-6. QA the result \u2014 \`tellclip edits\`, \`tellclip frame\` (see Closing the loop).
-7. \`tellclip share\` \u2014 renders and uploads, returns the share URL
+6. Author the post-factum transcript from verified marks and frames.
+7. QA the result \u2014 \`tellclip edits\`, \`tellclip transcript list\`,
+   \`tellclip frame\` (see Closing the loop).
+8. \`tellclip share\` \u2014 renders and uploads, returns the share URL
    (first time: run \`tellclip login\`, see Sharing).
 
 ## Staging \u2014 never record an unrehearsed flow
@@ -453,6 +464,37 @@ one per meaningful hover.
   to the latest session; pass --session <id> when working with several takes.
   Only the newest 10 sessions are kept.
 
+## Transcript \u2014 author it after the edit
+
+Author the transcript after the edit, never while recording. An automated
+take normally has no spoken narration; its transcript is concise viewer-facing
+context for the distinct beats that actually appear on screen, not a log of
+your commands or reasoning.
+
+Build the whole track atomically from source-time marks and frame checks:
+
+    printf '%s' '{"cues":[{"start":3.2,"end":5.0,"text":"Open the workspace settings."}]}' \\
+      | tellclip transcript set
+
+\`tellclip transcript set --file transcript.json\` reads the same shape from a
+file. Cue times are SOURCE seconds, so marks remain valid after cuts; Tellclip
+maps each cue through cuts and speed changes when it shares. Run \`tellclip
+transcript list\` and check \`caption_cues\` for the final viewer-time positions.
+Keep cues short, non-overlapping, and grounded in frames you verified. Submit
+the full track again to replace it safely; do not append partial state across
+retries.
+
+The authored track becomes captions and the uploaded clip's transcript and
+chapter input. CLI takes are silent, so the authored track is THE narration.
+For a session the human recorded in the app with a microphone, the authored
+track overrides the speech-generated transcript without deleting it;
+\`tellclip transcript clear\` restores the generated track.
+
+Cuts and speed changes made after \`transcript set\` can remove cues entirely;
+every \`cut\`/\`speed\`/\`edits\` response reports the loss as
+\`transcript_omitted_cue_count\`. If it is not 0, re-submit a track that
+matches the new edit.
+
 ## Title and summary
 
 Before sharing, set both: \`tellclip title "..."\` gives the clip a short,
@@ -529,9 +571,7 @@ var valueOptions = /* @__PURE__ */ new Set([
   "--min-still"
 ]);
 var booleanFlags = /* @__PURE__ */ new Set([
-  "--mic",
   "--system-audio",
-  "--webcam",
   "--from-marks",
   "--apply"
 ]);
@@ -618,9 +658,7 @@ function makeRequestSpec(command, args) {
       return { method: "GET", path: "/status" };
     case "record": {
       const body = {
-        mic: parsed.flags.has("--mic"),
-        system_audio: parsed.flags.has("--system-audio"),
-        webcam: parsed.flags.has("--webcam")
+        system_audio: parsed.flags.has("--system-audio")
       };
       const selectors = ["--window", "--app", "--display", "--region"].filter((option) => parsed.options.has(option));
       if (selectors.length !== 1) {
@@ -726,6 +764,50 @@ function makeRequestSpec(command, args) {
         throw new UsageError('summary needs the text: tellclip summary "Shows the onboarding flow.".');
       }
       return editSpec("summary", parsed, { text: parsed.positional[0] });
+    case "transcript": {
+      const subcommand = parsed.positional[0];
+      if (subcommand === void 0) {
+        throw new UsageError("transcript needs a subcommand: set, list, or clear.");
+      }
+      switch (subcommand) {
+        case "set": {
+          if (parsed.positional.length !== 1) {
+            throw new UsageError("transcript set reads a JSON cue track from --file or stdin.");
+          }
+          let trackData;
+          const file = parsed.options.get("--file");
+          if (file !== void 0) {
+            try {
+              trackData = readFileSync(file);
+            } catch {
+              throw new UsageError(`Could not read transcript track file at ${file}.`, false);
+            }
+          } else {
+            trackData = readFileSync(0);
+          }
+          const cues = parseTranscriptTrack(trackData);
+          if (cues === void 0) {
+            throw new UsageError(
+              'Transcript track must be JSON: {"cues":[{"start":1.5,"end":3.2,"text":"Open Settings."},\u2026]}.',
+              false
+            );
+          }
+          return editSpec("transcript_set", parsed, { cues });
+        }
+        case "list":
+          if (parsed.positional.length !== 1) {
+            throw new UsageError("transcript list takes no positional arguments.");
+          }
+          return editSpec("transcript_list", parsed);
+        case "clear":
+          if (parsed.positional.length !== 1) {
+            throw new UsageError("transcript clear takes no positional arguments.");
+          }
+          return editSpec("transcript_clear", parsed);
+        default:
+          throw new UsageError(`Unknown transcript subcommand '${subcommand}'.`);
+      }
+    }
     case "suggest": {
       const fields = {};
       const minStill = parsed.options.get("--min-still");
@@ -821,6 +903,21 @@ function parseCursorTrack(data) {
   );
   return objects ? points : void 0;
 }
+function parseTranscriptTrack(data) {
+  let track;
+  try {
+    track = JSON.parse(data.toString("utf8"));
+  } catch {
+    return void 0;
+  }
+  if (typeof track !== "object" || track === null || Array.isArray(track)) return void 0;
+  const cues = track.cues;
+  if (!Array.isArray(cues)) return void 0;
+  const objects = cues.every(
+    (cue) => typeof cue === "object" && cue !== null && !Array.isArray(cue)
+  );
+  return objects ? cues : void 0;
+}
 
 // src/transport.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
@@ -876,7 +973,7 @@ async function probe(endpoint) {
 }
 function launchApp() {
   const appPath = process.env.TELLCLIP_APP;
-  const args = appPath ? [appPath] : ["-b", "com.withmjp.tellclip"];
+  const args = appPath ? ["-g", "-j", appPath] : ["-g", "-j", "-b", "com.withmjp.tellclip"];
   const result = spawnSync2("/usr/bin/open", args, { stdio: "ignore" });
   return result.status === 0;
 }
@@ -912,7 +1009,7 @@ var usageText = `tellclip \u2014 record, edit, and share Tellclip clips from the
 USAGE
   tellclip targets
   tellclip record (--window <id|title> | --app <name|bundle-id> | --display <id|main> | --region <x,y,WxH>)
-                  [--mic] [--system-audio] [--webcam]
+                  [--system-audio]
   tellclip status
   tellclip pause | resume
   tellclip mark <label> [--at <x,y>] [--t <seconds> | --epoch-ms <ms>] [--session <s>]
@@ -925,6 +1022,9 @@ USAGE
   tellclip speed <start> <end> <rate> [--session <s>]
   tellclip title <text> [--session <s>]
   tellclip summary <text> [--session <s>]
+  tellclip transcript set [--file <path>] [--session <s>]
+  tellclip transcript list [--session <s>]
+  tellclip transcript clear [--session <s>]
   tellclip edits | marks [--session <s>]
   tellclip frame <seconds> [--out <path>] [--session <s>]
   tellclip cursor set [--file <path>] [--from-marks] [--session <s>]
@@ -935,9 +1035,9 @@ USAGE
   tellclip login | logout
   tellclip guide
 
-All output is JSON. Times are seconds in the source recording; coordinates are
-normalized 0-1 from the top-left of the captured window. Run \`tellclip guide\`
-for the full agent workflow.`;
+All output is JSON. Edit and transcript cue times are seconds in the source
+recording; coordinates are normalized 0-1 from the top-left of the captured
+window. Run \`tellclip guide\` for the full agent workflow.`;
 
 // src/main.ts
 async function run() {

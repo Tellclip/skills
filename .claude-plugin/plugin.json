@@ -1,7 +1,7 @@
 {
   "name": "tellclip",
   "displayName": "Tellclip",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Beautiful screen recordings and shared clip workflows for agents. Bundles the Tellclip CLI, demo-recording skill, and hosted MCP.",
   "author": {
     "name": "Tellclip",
