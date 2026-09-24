@@ -329,7 +329,7 @@ function deleteAppSession() {
 }
 
 // src/version.ts
-var cliVersion = true ? "0.2.4" : "dev";
+var cliVersion = true ? "0.2.5" : "dev";
 function isVersionOlder(candidate, minimum) {
   const candidateParts = numericVersion(candidate);
   const minimumParts = numericVersion(minimum);
@@ -372,8 +372,24 @@ For an existing MP4, use \`tellclip upload file.mp4 --title "Demo"\`.
 This command works on macOS and Linux without the Tellclip app.
 It requires Node.js 20 or later and FFmpeg, including ffprobe.
 Files must use 8-bit H.264 with 4:2:0 color and optional AAC audio.
-The size limit is 1 GB (1,000,000,000 bytes). Uploads do not create transcripts.
+The size limit is 1 GB (1,000,000,000 bytes).
 The result is {"clip_id":"\u2026","url":"\u2026","status":"ready"}. Progress goes to stderr.
+
+Tellclip does not transcribe uploads. You know what the video shows, so
+author the content and send it with the upload:
+
+  tellclip upload demo.mp4 --title "Demo" \\
+    --transcript track.json --chapters chapters.json --summary "\u2026"
+
+- \`--transcript\`: the \`transcript set\` cues JSON
+  ({"cues":[{"start":1.5,"end":3.2,"text":"Open Settings."}]}) or a WebVTT
+  file, e.g. from whisper. It becomes the captions and the transcript.
+- \`--chapters\`: {"chapters":[{"start":0,"title":"Intro"}]}, 1\u201350 chapters,
+  starts rounded down to whole seconds and strictly increasing, titles up to 120 characters.
+- \`--summary\`: 2\u20134 sentences, up to 600 characters.
+Times are seconds in the video. Everything is checked before the video
+transfers. With a transcript, Tellclip generates any chapters or summary you
+leave out; it never replaces what you authored.
 
 For CI, use an organization API key in \`TELLCLIP_API_KEY\`.
 Owners and admins create keys under Settings \u2192 Integrations.
@@ -1169,7 +1185,8 @@ var usageText = `tellclip \u2014 record, edit, and share Tellclip clips from the
 
 USAGE
   tellclip --version
-  tellclip upload <file.mp4> [--title <title>]
+  tellclip upload <file.mp4> [--title <title>] [--transcript <cues.json|file.vtt>]
+                  [--chapters <chapters.json>] [--summary <text>]
   tellclip targets
   tellclip record (--window <id|title> | --app <name|bundle-id> | --display <id|main> | --region <x,y,WxH>)
                   [--system-audio]
@@ -1204,28 +1221,163 @@ window. Run \`tellclip guide\` for the full agent workflow.`;
 
 // src/upload.ts
 import { execFile } from "node:child_process";
-import { open } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
 import path2 from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+
+// src/authored-content.ts
+var maxTranscriptBytes = 2 * 1024 * 1024;
+var maxChapters = 50;
+var maxChapterTitle = 120;
+var maxSummary = 600;
+var durationSlackSeconds = 0.5;
+var transcriptHint = 'Use {"cues":[{"start":1.5,"end":3.2,"text":"Open Settings."}]} (seconds) or a WebVTT file.';
+var chaptersHint = 'Use {"chapters":[{"start":0,"title":"Intro"},{"start":12.5,"title":"Settings"}]} (seconds).';
+function invalid(code, message, next) {
+  return cliError(code, message, next, 2);
+}
+function formatVttTimestamp(seconds) {
+  const total = Math.max(0, Math.round(seconds * 1e3));
+  const pad = (value, width = 2) => String(value).padStart(width, "0");
+  return `${pad(Math.floor(total / 36e5))}:${pad(Math.floor(total % 36e5 / 6e4))}:${pad(Math.floor(total % 6e4 / 1e3))}.${pad(total % 1e3, 3)}`;
+}
+function encodeVttText(text) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function cuesToVtt(cues) {
+  const blocks = cues.map(
+    (cue) => `${formatVttTimestamp(cue.start)} --> ${formatVttTimestamp(cue.end)}
+${encodeVttText(cue.text)}`
+  );
+  return `WEBVTT
+
+${blocks.join("\n\n")}
+`;
+}
+var vttTiming = /^\s*((?:\d{2,}:)?\d{2}:\d{2}[.,]\d{3})\s+-->\s+((?:\d{2,}:)?\d{2}:\d{2}[.,]\d{3})/;
+function vttSeconds(label) {
+  const parts = label.replace(",", ".").split(":").map(Number);
+  return parts.reduce((total, part) => total * 60 + part, 0);
+}
+function parseTranscriptInput(source, duration) {
+  const text = source.replace(/^﻿/, "");
+  const limit = duration + durationSlackSeconds;
+  let vtt;
+  if (text.startsWith("WEBVTT")) {
+    const timings = text.split(/\r?\n/).map((line) => vttTiming.exec(line)).filter((match) => match !== null);
+    if (timings.length === 0)
+      throw invalid("invalid_transcript", "The WebVTT file has no cues.", transcriptHint);
+    for (const [, start, end] of timings) {
+      if (vttSeconds(end) <= vttSeconds(start) || vttSeconds(end) > limit)
+        throw invalid(
+          "invalid_transcript",
+          `Cue ${start} --> ${end} must end after it starts and before the video ends (${duration.toFixed(2)} s).`,
+          transcriptHint
+        );
+    }
+    vtt = text;
+  } else {
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw invalid("invalid_transcript", "The transcript is neither JSON nor WebVTT.", transcriptHint);
+    }
+    const cues = parsed?.cues;
+    if (!Array.isArray(cues) || cues.length === 0)
+      throw invalid("invalid_transcript", "The transcript needs a non-empty cues array.", transcriptHint);
+    const normalized = cues.map((cue, index) => {
+      const { start, end, text: cueText } = cue ?? {};
+      const collapsed = typeof cueText === "string" ? cueText.replace(/\s+/g, " ").trim() : "";
+      if (typeof start !== "number" || typeof end !== "number" || !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end > limit || !collapsed)
+        throw invalid(
+          "invalid_transcript",
+          `Cue ${index} needs 0 <= start < end <= ${duration.toFixed(2)} and non-empty text.`,
+          transcriptHint
+        );
+      return { start, end: Math.min(end, duration), text: collapsed };
+    });
+    vtt = cuesToVtt(normalized.sort((a, b) => a.start - b.start));
+  }
+  if (Buffer.byteLength(vtt) > maxTranscriptBytes)
+    throw invalid("invalid_transcript", "The transcript is larger than 2 MB.", "Shorten the transcript.");
+  return vtt;
+}
+function formatChapterTimestamp(seconds) {
+  const whole = Math.floor(seconds);
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor(whole % 3600 / 60);
+  const rest = String(whole % 60).padStart(2, "0");
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${rest}` : `${String(minutes).padStart(2, "0")}:${rest}`;
+}
+function parseChaptersInput(source, duration) {
+  let parsed;
+  try {
+    parsed = JSON.parse(source.replace(/^﻿/, ""));
+  } catch {
+    throw invalid("invalid_chapters", "The chapters file is not JSON.", chaptersHint);
+  }
+  const chapters = parsed?.chapters;
+  if (!Array.isArray(chapters) || chapters.length === 0 || chapters.length > maxChapters)
+    throw invalid("invalid_chapters", `Provide 1\u2013${maxChapters} chapters.`, chaptersHint);
+  let previous = -1;
+  return chapters.map((chapter, index) => {
+    const { start, title } = chapter ?? {};
+    const trimmed = typeof title === "string" ? title.trim() : "";
+    const second = typeof start === "number" && Number.isFinite(start) ? Math.floor(start) : NaN;
+    if (!(second >= 0) || second >= duration || second <= previous || !trimmed || trimmed.length > maxChapterTitle)
+      throw invalid(
+        "invalid_chapters",
+        `Chapter ${index} needs a start in whole seconds after the previous one and before ${duration.toFixed(2)}, and a 1\u2013${maxChapterTitle} character title.`,
+        chaptersHint
+      );
+    previous = second;
+    return { start: formatChapterTimestamp(second), title: trimmed };
+  });
+}
+function parseSummaryInput(source) {
+  const summary = source.trim();
+  if (!summary || summary.length > maxSummary)
+    throw invalid("invalid_summary", `The summary must contain 1\u2013${maxSummary} characters.`, "Write 2\u20134 sentences.");
+  return summary;
+}
+
+// src/upload.ts
 var maxUploadBytes = 1e9;
+var uploadUsage = "Usage: tellclip upload <file.mp4> [--title <title>] [--transcript <cues.json|file.vtt>] [--chapters <chapters.json>] [--summary <text>]";
+var valueFlags = ["--title", "--transcript", "--chapters", "--summary"];
 function parseUploadArgs(args) {
   let file;
-  let title;
+  const values = {};
   for (let i = 0; i < args.length; i++) {
     const argument = args[i];
-    if (argument === "--title" && title === void 0 && args[i + 1] !== void 0)
-      title = args[++i];
+    if (valueFlags.includes(argument) && values[argument] === void 0 && args[i + 1] !== void 0)
+      values[argument] = args[++i];
     else if (!argument.startsWith("-") && file === void 0) file = argument;
-    else
-      throw new UsageError(
-        "Usage: tellclip upload <file.mp4> [--title <title>]"
-      );
+    else throw new UsageError(uploadUsage);
   }
   if (!file) throw new UsageError("upload needs an MP4 file.");
-  title = (title ?? path2.basename(file, path2.extname(file))).trim();
+  const title = (values["--title"] ?? path2.basename(file, path2.extname(file))).trim();
   if (!title || title.length > 200)
     throw new UsageError("Title must contain 1\u2013200 characters.");
-  return { file: path2.resolve(file), title };
+  const resolve = (value) => value === void 0 ? void 0 : path2.resolve(value);
+  return {
+    file: path2.resolve(file),
+    title,
+    transcript: resolve(values["--transcript"]),
+    chapters: resolve(values["--chapters"]),
+    summary: values["--summary"] === void 0 ? void 0 : parseSummaryInput(values["--summary"])
+  };
+}
+async function readAuthoredFile(file) {
+  return readFile(file, "utf8").catch(() => {
+    throw cliError(
+      "file_unreadable",
+      `Could not read ${file}.`,
+      "Check the file path and permissions.",
+      2
+    );
+  });
 }
 async function probeUpload(file) {
   const data = await new Promise((resolve, reject) => {
@@ -1285,9 +1437,10 @@ async function probeUpload(file) {
       1
     );
   }
+  return Number(media.format.duration);
 }
 async function uploadFile(args, deps = {}) {
-  const { file, title } = parseUploadArgs(args);
+  const { file, title, ...authored } = parseUploadArgs(args);
   const base = deps.base ?? normalizedWebBaseURL();
   let origin;
   try {
@@ -1369,8 +1522,17 @@ async function uploadFile(args, deps = {}) {
         void 0,
         1
       );
-    await (deps.probe ?? probeUpload)(file);
-    const upload = await request("", "POST", { title, size_bytes: info.size });
+    const duration = await (deps.probe ?? probeUpload)(file);
+    const transcript = authored.transcript ? parseTranscriptInput(
+      await readAuthoredFile(authored.transcript),
+      duration
+    ) : void 0;
+    const chapters = authored.chapters ? parseChaptersInput(await readAuthoredFile(authored.chapters), duration) : void 0;
+    const upload = await request("", "POST", {
+      title,
+      size_bytes: info.size,
+      ...transcript === void 0 ? {} : { transcript_size_bytes: Buffer.byteLength(transcript) }
+    });
     if (typeof upload.upload_id !== "string" || typeof upload.upload_url !== "string")
       throw cliError(
         "bad_response",
@@ -1411,12 +1573,51 @@ async function uploadFile(args, deps = {}) {
     } finally {
       stream.destroy();
     }
+    if (transcript !== void 0) {
+      if (typeof upload.transcript_upload_url !== "string")
+        throw cliError(
+          "bad_response",
+          "The server did not accept a transcript.",
+          "Update Tellclip's server or upload without --transcript.",
+          1
+        );
+      const response = await fetcher(upload.transcript_upload_url, {
+        method: "PUT",
+        redirect: "error",
+        headers: {
+          "Content-Type": "text/vtt; charset=utf-8",
+          "Content-Length": String(Buffer.byteLength(transcript))
+        },
+        body: transcript,
+        signal: AbortSignal.any([
+          controller.signal,
+          AbortSignal.timeout(9e4)
+        ])
+      });
+      if (!response.ok)
+        throw cliError(
+          "upload_failed",
+          "Transcript transfer failed.",
+          "Run the upload again.",
+          1
+        );
+      await response.body?.cancel();
+    }
+    const content = {
+      ...transcript === void 0 ? {} : { transcript_uploaded: true },
+      ...authored.summary === void 0 ? {} : { summary: authored.summary },
+      ...chapters === void 0 ? {} : { chapters }
+    };
     process.stderr.write("Validating video\u2026\n");
     publishing = true;
     let complete;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        complete = await request(`/${uploadId}/complete`, "POST");
+        complete = await request(
+          `/${uploadId}/complete`,
+          "POST",
+          Object.keys(content).length ? content : void 0
+        );
         break;
       } catch (error) {
         const code = error instanceof EmitAndExit ? error.payload.error?.code : void 0;

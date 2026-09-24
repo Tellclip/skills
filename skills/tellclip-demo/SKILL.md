@@ -11,7 +11,7 @@ description: >
   and upload.
   Records real product environments only — a mock needs explicit approval.
 metadata:
-  version: "0.2.4"
+  version: "0.2.5"
 ---
 
 # Recording a product demo with tellclip
@@ -29,6 +29,9 @@ organization operations itself.
   choose a capture target, record, stop, add cursor and zoom edits, cut or
   speed up ranges, author timed transcript cues, set the title and summary,
   render, save, and share.
+- For an MP4 that already exists (any OS, CI, no app), use
+  `tellclip upload file.mp4`. The agent that made the video authors its
+  content: `--transcript`, `--chapters`, `--summary`. See `tellclip guide`.
 - The hosted Tellclip **MCP** works with authenticated organization data. Use
   its tools for members, workspaces, uploaded clips, transcripts, frames,
   comments, and organization-side clip settings. It cannot record or edit a
