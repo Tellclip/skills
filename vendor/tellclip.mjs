@@ -25,6 +25,62 @@ var UsageError = class extends Error {
   }
 };
 
+// src/session-store.ts
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync
+} from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
+function sessionPath(origin, configRoot) {
+  const configured = process.env.XDG_CONFIG_HOME;
+  const root = configRoot ?? (configured && path.isAbsolute(configured) ? configured : path.join(homedir(), ".config"));
+  return path.join(
+    root,
+    "tellclip",
+    "sessions",
+    `${createHash("sha256").update(origin).digest("hex")}.json`
+  );
+}
+function writeLinuxSession(origin, payload, configRoot) {
+  const file = sessionPath(origin, configRoot);
+  mkdirSync(path.dirname(file), { recursive: true, mode: 448 });
+  chmodSync(path.dirname(file), 448);
+  const temporary = `${file}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temporary, payload, { mode: 384, flag: "wx" });
+    renameSync(temporary, file);
+  } finally {
+    try {
+      unlinkSync(temporary);
+    } catch {
+    }
+  }
+}
+function readLinuxSession(origin, configRoot) {
+  const file = sessionPath(origin, configRoot);
+  try {
+    const info = lstatSync(file);
+    if (!info.isFile() || (info.mode & 63) !== 0) return void 0;
+    return readFileSync(file, "utf8");
+  } catch {
+    return void 0;
+  }
+}
+function deleteLinuxSession(origin, configRoot) {
+  try {
+    unlinkSync(sessionPath(origin, configRoot));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}
+
 // src/auth.ts
 var appDefaultsDomain = "com.withmjp.tellclip";
 var appSessionKey = "TCAuthSession";
@@ -55,7 +111,7 @@ function appSessionPayload(input) {
 async function standaloneLogin(deps = {}) {
   const base = deps.webBaseURL ?? normalizedWebBaseURL();
   const openUrl = deps.openUrl ?? openInBrowser;
-  const persist = deps.persistAppSession ?? writeAppSession;
+  const persist = deps.persistAppSession ?? ((payload) => process.platform === "linux" ? writeLinuxSession(base, payload) : writeAppSession(payload));
   const timeoutMs = deps.timeoutMs ?? loginTimeoutMs;
   const listener = await startLoopbackListener();
   try {
@@ -71,7 +127,7 @@ async function standaloneLogin(deps = {}) {
     if (!openUrl(authorizationUrl)) {
       throw cliError(
         "login_failed",
-        `Could not open a browser. Open this URL on this Mac to sign in: ${authorizationUrl}`,
+        `Could not open a browser. Open this URL on this computer: ${authorizationUrl}`,
         "The sign-in callback lands on this machine's loopback, so the browser must run here.",
         1
       );
@@ -98,8 +154,11 @@ async function standaloneLogin(deps = {}) {
 }
 async function standaloneLogout(deps = {}) {
   const base = deps.webBaseURL ?? normalizedWebBaseURL();
-  const read = deps.readAppSession ?? readAppSession;
-  const remove = deps.deleteAppSession ?? deleteAppSession;
+  const read = deps.readAppSession ?? (() => readStoredSession(base));
+  const remove = deps.deleteAppSession ?? (() => {
+    if (process.platform === "linux") deleteLinuxSession(base);
+    else if (readStoredSession(base)) deleteAppSession();
+  });
   const session = read();
   if (session?.token) {
     await fetch(`${base}/api/auth/native/logout`, {
@@ -215,7 +274,7 @@ function loginFailed(message) {
   );
 }
 function openInBrowser(url) {
-  return spawnSync("/usr/bin/open", [url], { stdio: "ignore" }).status === 0;
+  return spawnSync(process.platform === "linux" ? "xdg-open" : "/usr/bin/open", [url], { stdio: "ignore" }).status === 0;
 }
 function writeAppSession(payloadJson) {
   const hex = Buffer.from(payloadJson, "utf8").toString("hex");
@@ -240,17 +299,59 @@ function readAppSession() {
   if (!match) return void 0;
   try {
     const session = JSON.parse(Buffer.from(match[1].replace(/\s+/g, ""), "base64").toString("utf8"));
-    return typeof session?.token === "string" ? { token: session.token } : void 0;
+    return typeof session?.token === "string" ? session : void 0;
   } catch {
     return void 0;
   }
+}
+function readStoredSession(base) {
+  try {
+    const session = process.platform === "linux" ? JSON.parse(readLinuxSession(base) ?? "null") : readAppSession();
+    return session && session.webBaseURL === base && typeof session.token === "string" ? session : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function uploadToken(base) {
+  if (process.env.TELLCLIP_API_KEY !== void 0) {
+    const key = process.env.TELLCLIP_API_KEY.trim();
+    if (!key) throw cliError("unauthorized", "TELLCLIP_API_KEY is empty.", "Supply an API key or unset it and run tellclip login.", 1);
+    return key;
+  }
+  const session = readStoredSession(base);
+  if (!session || !Number.isFinite(session.expiresAt) || session.expiresAt * 1e3 + appleReferenceEpochMs <= Date.now()) {
+    throw cliError("unauthorized", "No valid sign-in for this server.", "Run tellclip login or set TELLCLIP_API_KEY.", 1);
+  }
+  return session.token;
 }
 function deleteAppSession() {
   spawnSync("defaults", ["delete", appDefaultsDomain, appSessionKey], { stdio: "ignore" });
 }
 
+// src/version.ts
+var cliVersion = true ? "0.2.4" : "dev";
+function isVersionOlder(candidate, minimum) {
+  const candidateParts = numericVersion(candidate);
+  const minimumParts = numericVersion(minimum);
+  if (candidateParts === void 0 || minimumParts === void 0) return false;
+  const count = Math.max(candidateParts.length, minimumParts.length);
+  for (let index = 0; index < count; index += 1) {
+    const candidatePart = candidateParts[index] ?? 0;
+    const minimumPart = minimumParts[index] ?? 0;
+    if (candidatePart !== minimumPart) return candidatePart < minimumPart;
+  }
+  return false;
+}
+function numericVersion(version) {
+  const components = version.split(".");
+  if (components.length === 0 || components.some((component) => !/^\d+$/.test(component))) {
+    return void 0;
+  }
+  return components.map(Number);
+}
+
 // src/guide.ts
-var agentGuideText = `# Tellclip agent guide
+var agentGuideText = `# Tellclip agent guide (tellclip ${cliVersion})
 
 You are driving a screen recording of a real macOS window while you automate
 it (browser or any app), then polishing and sharing the result. Every command
@@ -266,6 +367,20 @@ during your take, and can stop it from the menu bar \u2014 your next command the
 reports \`not_recording\`.
 
 ## Skill, CLI, and MCP \u2014 route the work correctly
+
+For an existing MP4, use \`tellclip upload file.mp4 --title "Demo"\`.
+This command works on macOS and Linux without the Tellclip app.
+It requires Node.js 20 or later and FFmpeg, including ffprobe.
+Files must use 8-bit H.264 with 4:2:0 color and optional AAC audio.
+The size limit is 1 GB (1,000,000,000 bytes). Uploads do not create transcripts.
+The result is {"clip_id":"\u2026","url":"\u2026","status":"ready"}. Progress goes to stderr.
+
+For CI, use an organization API key in \`TELLCLIP_API_KEY\`.
+Owners and admins create keys under Settings \u2192 Integrations.
+Keys permit uploads only. They do not grant recording, editing, or MCP access.
+The key takes precedence over personal sign-in, without fallback on failure.
+Any member can instead use \`tellclip login\` from a computer with a browser.
+Uploads require an active trial or subscription.
 
 - The \`tellclip-demo\` skill routes the task and teaches the workflow. It does
   not execute the work itself.
@@ -286,6 +401,22 @@ It does not authenticate the hosted MCP. For MCP OAuth, use \`/mcp\` or
 \`codex mcp login tellclip\` in Codex, or
 \`cursor-agent mcp login tellclip\` in Cursor. Authenticate when organization
 tools are needed.
+
+## Agent Editing mode
+
+The editor may stay open while you edit its recording. The first mutating
+command temporarily places that editor in Agent Editing mode and makes it
+read-only for the person at the Mac. The lease remains active while a command
+runs and for a short idle period between commands. Read-only commands such as
+\`status\`, \`targets\`, \`marks\`, \`frame\`, \`edits\`, \`zoom list\`,
+\`transcript list\`, and \`suggest\` without \`--apply\` never activate it.
+
+The person can choose Switch to Manual Mode at any time. If a command returns
+\`agent_stopped\`, stop immediately, do not retry automatically, and wait for
+an explicit request to continue. \`session_open_in_editor\` is a legacy error
+from older Tellclip versions; ask the person to update Tellclip or close the
+editor if it appears. The editor's robot button only copies an editing prompt;
+clicking it does not grant agent access.
 
 A demo is a TAKE, not a transcript of your tool calls. The whole difference
 between a clip that reads as human-made and one that reads as bot-made is
@@ -527,8 +658,9 @@ launches; \`tellclip status\` reports \`signed_in\`, and \`tellclip logout\`
 signs out. This session is unrelated to hosted MCP OAuth. Re-running share on
 the same session replaces
 the clip at the SAME URL \u2014 safe to iterate. \`tellclip save --out demo.mp4\`
-renders locally without uploading. \`tellclip preview\` opens the human
-editor; close it before running more CLI edits.`;
+renders locally without uploading. \`tellclip preview\` ends Agent Editing
+mode, reloads the editor from disk, focuses it, and starts review from the
+beginning. Run it when the editing pass is complete.`;
 
 // src/output.ts
 function sortedForOutput(value) {
@@ -555,7 +687,7 @@ function emit(object, exitCode) {
 }
 
 // src/spec.ts
-import { readFileSync } from "node:fs";
+import { readFileSync as readFileSync2 } from "node:fs";
 var valueOptions = /* @__PURE__ */ new Set([
   "--window",
   "--app",
@@ -778,12 +910,12 @@ function makeRequestSpec(command, args) {
           const file = parsed.options.get("--file");
           if (file !== void 0) {
             try {
-              trackData = readFileSync(file);
+              trackData = readFileSync2(file);
             } catch {
               throw new UsageError(`Could not read transcript track file at ${file}.`, false);
             }
           } else {
-            trackData = readFileSync(0);
+            trackData = readFileSync2(0);
           }
           const cues = parseTranscriptTrack(trackData);
           if (cues === void 0) {
@@ -842,12 +974,12 @@ function makeRequestSpec(command, args) {
           const file = parsed.options.get("--file");
           if (file !== void 0) {
             try {
-              trackData = readFileSync(file);
+              trackData = readFileSync2(file);
             } catch {
               throw new UsageError(`Could not read cursor track file at ${file}.`, false);
             }
           } else {
-            trackData = readFileSync(0);
+            trackData = readFileSync2(0);
           }
           const points = parseCursorTrack(trackData);
           if (points === void 0) {
@@ -921,16 +1053,17 @@ function parseTranscriptTrack(data) {
 
 // src/transport.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { readFileSync as readFileSync2 } from "node:fs";
+import { readFileSync as readFileSync3 } from "node:fs";
 import http2 from "node:http";
-import { homedir } from "node:os";
+import { homedir as homedir2 } from "node:os";
 import { join } from "node:path";
+var updateNext = "In Claude Code run `claude plugin update tellclip@tellclip` and restart the session; otherwise `npm i -g tellclip@latest`.";
 function discoveryFilePath() {
-  return join(homedir(), "Library", "Application Support", "TellClip", "cli.json");
+  return join(homedir2(), "Library", "Application Support", "TellClip", "cli.json");
 }
 function readDiscoveryFile() {
   try {
-    const object = JSON.parse(readFileSync2(discoveryFilePath(), "utf8"));
+    const object = JSON.parse(readFileSync3(discoveryFilePath(), "utf8"));
     const { port, token } = object ?? {};
     if (Number.isInteger(port) && typeof token === "string") {
       return { port, token };
@@ -939,11 +1072,12 @@ function readDiscoveryFile() {
   }
   return void 0;
 }
-function send(spec, endpoint, timeoutMs) {
+function send(spec, endpoint, timeoutMs, version = cliVersion) {
   return new Promise((resolve) => {
     const payload = spec.method === "POST" ? JSON.stringify(spec.body ?? {}) : void 0;
     const headers = {
-      authorization: `Bearer ${endpoint.token}`
+      authorization: `Bearer ${endpoint.token}`,
+      "x-tellclip-cli-version": version
     };
     if (payload !== void 0) {
       headers["content-type"] = "application/json";
@@ -967,9 +1101,36 @@ function send(spec, endpoint, timeoutMs) {
     request.end();
   });
 }
-async function probe(endpoint) {
-  const response = await send({ method: "GET", path: "/status" }, endpoint, 2e3);
-  return response !== void 0;
+async function probe(endpoint, version = cliVersion) {
+  const response = await send({ method: "GET", path: "/status" }, endpoint, 2e3, version);
+  if (response === void 0) return void 0;
+  let status = {};
+  try {
+    const parsed = JSON.parse(response.body.toString("utf8"));
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      status = parsed;
+    }
+  } catch {
+  }
+  if (typeof status.min_cli_version === "string" && isVersionOlder(version, status.min_cli_version)) {
+    throw cliError(
+      "cli_outdated",
+      `tellclip ${version} is older than the minimum supported version ${status.min_cli_version}.`,
+      updateNext,
+      1
+    );
+  }
+  if (typeof status.bundled_cli_version === "string" && isVersionOlder(version, status.bundled_cli_version)) {
+    process.stderr.write(
+      `tellclip ${version} is behind the version shipped with this Tellclip (${status.bundled_cli_version}). ${updateNext}
+`
+    );
+  }
+  if (typeof status.app_update_available === "string") {
+    process.stderr.write(`A Tellclip app update is available (${status.app_update_available})
+`);
+  }
+  return status;
 }
 function launchApp() {
   const appPath = process.env.TELLCLIP_APP;
@@ -1007,6 +1168,8 @@ async function connectOrLaunch() {
 var usageText = `tellclip \u2014 record, edit, and share Tellclip clips from the command line.
 
 USAGE
+  tellclip --version
+  tellclip upload <file.mp4> [--title <title>]
   tellclip targets
   tellclip record (--window <id|title> | --app <name|bundle-id> | --display <id|main> | --region <x,y,WxH>)
                   [--system-audio]
@@ -1039,6 +1202,269 @@ All output is JSON. Edit and transcript cue times are seconds in the source
 recording; coordinates are normalized 0-1 from the top-left of the captured
 window. Run \`tellclip guide\` for the full agent workflow.`;
 
+// src/upload.ts
+import { execFile } from "node:child_process";
+import { open } from "node:fs/promises";
+import path2 from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+var maxUploadBytes = 1e9;
+function parseUploadArgs(args) {
+  let file;
+  let title;
+  for (let i = 0; i < args.length; i++) {
+    const argument = args[i];
+    if (argument === "--title" && title === void 0 && args[i + 1] !== void 0)
+      title = args[++i];
+    else if (!argument.startsWith("-") && file === void 0) file = argument;
+    else
+      throw new UsageError(
+        "Usage: tellclip upload <file.mp4> [--title <title>]"
+      );
+  }
+  if (!file) throw new UsageError("upload needs an MP4 file.");
+  title = (title ?? path2.basename(file, path2.extname(file))).trim();
+  if (!title || title.length > 200)
+    throw new UsageError("Title must contain 1\u2013200 characters.");
+  return { file: path2.resolve(file), title };
+}
+async function probeUpload(file) {
+  const data = await new Promise((resolve, reject) => {
+    execFile(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-protocol_whitelist",
+        "file",
+        "-f",
+        "mov",
+        "-i",
+        file,
+        "-show_format",
+        "-show_streams",
+        "-of",
+        "json"
+      ],
+      { timeout: 3e4, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 },
+      (error, stdout) => {
+        if (error)
+          reject(
+            cliError(
+              "invalid_video",
+              "Could not inspect the MP4 file.",
+              "Install FFmpeg (including ffprobe) and check that the file is readable.",
+              1
+            )
+          );
+        else resolve(stdout);
+      }
+    );
+  });
+  let media;
+  try {
+    media = JSON.parse(data);
+  } catch {
+    throw cliError(
+      "invalid_video",
+      "Could not inspect the MP4 file.",
+      void 0,
+      1
+    );
+  }
+  const videos = media.streams?.filter(
+    (s) => s.codec_type === "video"
+  ) ?? [];
+  const audio = media.streams?.filter(
+    (s) => s.codec_type === "audio"
+  ) ?? [];
+  if (!media.format?.format_name?.split(",").includes("mp4") || media.format.tags?.major_brand?.trim() === "qt" || videos.length !== 1 || videos[0].codec_name !== "h264" || !["yuv420p", "yuvj420p"].includes(videos[0].pix_fmt) || audio.length > 1 || audio.some((s) => s.codec_name !== "aac") || !Number.isFinite(Number(media.format.duration)) || Number(media.format.duration) <= 0) {
+    throw cliError(
+      "unsupported_video",
+      "Use an 8-bit H.264 MP4 with optional AAC audio.",
+      "Convert the file before uploading. Tellclip does not transcode uploads.",
+      1
+    );
+  }
+}
+async function uploadFile(args, deps = {}) {
+  const { file, title } = parseUploadArgs(args);
+  const base = deps.base ?? normalizedWebBaseURL();
+  let origin;
+  try {
+    origin = new URL(base);
+  } catch {
+    throw cliError(
+      "invalid_server",
+      "The server URL is invalid.",
+      void 0,
+      1
+    );
+  }
+  if (origin.username || origin.password || origin.protocol !== "https:" && !(origin.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname))) {
+    throw cliError(
+      "invalid_server",
+      "The server must use HTTPS (except localhost).",
+      void 0,
+      1
+    );
+  }
+  const token = deps.token ?? uploadToken(base);
+  const fetcher = deps.fetch ?? fetch;
+  const handle = await open(file, "r").catch(() => {
+    throw cliError(
+      "file_unreadable",
+      "Could not open the video file.",
+      "Check the file path and permissions.",
+      1
+    );
+  });
+  let uploadId;
+  let publishing = false;
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  process.once("SIGINT", cancel);
+  process.once("SIGTERM", cancel);
+  const request = async (suffix, method, body) => {
+    let response;
+    try {
+      response = await fetcher(`${base}/api/clip-uploads${suffix}`, {
+        method,
+        redirect: "error",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json"
+        },
+        ...body === void 0 ? {} : { body: JSON.stringify(body) },
+        signal: AbortSignal.any([
+          controller.signal,
+          AbortSignal.timeout(9e4)
+        ])
+      });
+    } catch {
+      throw cliError(
+        "network_error",
+        "Could not reach Tellclip.",
+        "Check the connection and try again.",
+        1
+      );
+    }
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = payload.error;
+      throw cliError(
+        typeof error === "object" ? error.code ?? "upload_failed" : "upload_failed",
+        typeof error === "string" ? error : error?.message ?? "Upload failed.",
+        void 0,
+        1
+      );
+    }
+    return payload;
+  };
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.size < 1 || info.size > maxUploadBytes)
+      throw cliError(
+        "invalid_size",
+        "Choose a non-empty video file no larger than 1 GB.",
+        void 0,
+        1
+      );
+    await (deps.probe ?? probeUpload)(file);
+    const upload = await request("", "POST", { title, size_bytes: info.size });
+    if (typeof upload.upload_id !== "string" || typeof upload.upload_url !== "string")
+      throw cliError(
+        "bad_response",
+        "The server returned an invalid upload response.",
+        void 0,
+        1
+      );
+    uploadId = upload.upload_id;
+    process.stderr.write("Uploading video\u2026\n");
+    const stream = handle.createReadStream({
+      start: 0,
+      end: info.size - 1,
+      autoClose: false
+    });
+    try {
+      const response = await fetcher(upload.upload_url, {
+        method: "PUT",
+        redirect: "error",
+        headers: {
+          "Content-Type": "video/mp4",
+          "Content-Length": String(info.size)
+        },
+        body: stream,
+        duplex: "half",
+        signal: AbortSignal.any([
+          controller.signal,
+          AbortSignal.timeout(36e5)
+        ])
+      });
+      if (!response.ok)
+        throw cliError(
+          "upload_failed",
+          "File transfer failed.",
+          "Run the upload again.",
+          1
+        );
+      await response.body?.cancel();
+    } finally {
+      stream.destroy();
+    }
+    process.stderr.write("Validating video\u2026\n");
+    publishing = true;
+    let complete;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        complete = await request(`/${uploadId}/complete`, "POST");
+        break;
+      } catch (error) {
+        const code = error instanceof EmitAndExit ? error.payload.error?.code : void 0;
+        if (controller.signal.aborted || !["network_error", "busy"].includes(code ?? "") || attempt === 2)
+          throw error;
+        await delay(1e3 * (attempt + 1), void 0, {
+          signal: controller.signal
+        });
+      }
+    }
+    if (complete?.status !== "ready" || typeof complete.clip_id !== "string" || typeof complete.share_token !== "string") {
+      throw cliError(
+        "bad_response",
+        "The server did not confirm publication.",
+        void 0,
+        1
+      );
+    }
+    return {
+      clip_id: complete.clip_id,
+      url: `${base}/v/${complete.share_token}`,
+      status: "ready"
+    };
+  } catch (error) {
+    if (uploadId && !publishing) {
+      await fetcher(`${base}/api/clip-uploads/${uploadId}`, {
+        method: "DELETE",
+        redirect: "error",
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5e3)
+      }).catch(() => {
+      });
+    }
+    if (error instanceof EmitAndExit || error instanceof UsageError)
+      throw error;
+    throw cliError(
+      "upload_failed",
+      "Video upload failed.",
+      "Check the file and connection, then try again.",
+      1
+    );
+  } finally {
+    process.removeListener("SIGINT", cancel);
+    process.removeListener("SIGTERM", cancel);
+    await handle.close();
+  }
+}
+
 // src/main.ts
 async function run() {
   const args = process.argv.slice(2);
@@ -1050,11 +1476,26 @@ async function run() {
     process.stdout.write(usageText + "\n");
     return;
   }
+  if (command === "version" || command === "-v" || command === "--version") {
+    emit({ version: cliVersion }, 0);
+    return;
+  }
   if (command === "guide") {
     process.stdout.write(agentGuideText + "\n");
     return;
   }
+  if (command === "upload") {
+    emit(await uploadFile(args.slice(1)), 0);
+    return;
+  }
   const spec = makeRequestSpec(command, args.slice(1));
+  if (process.platform !== "darwin") {
+    if (command === "login" || command === "logout") {
+      emit(command === "login" ? await standaloneLogin() : await standaloneLogout(), 0);
+      return;
+    }
+    throw cliError("unsupported_platform", "Recording and editing require the Tellclip macOS app.", "Use tellclip upload for an existing MP4.", 1);
+  }
   if (command === "login" || command === "logout") {
     const endpoint = readDiscoveryFile();
     if (endpoint === void 0 || !await probe(endpoint)) {

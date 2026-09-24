@@ -90,6 +90,11 @@ tellclip guide
 `tellclip guide` prints the full workflow contract and is always current for
 the version you have installed.
 
+## Staying up to date
+
+The Tellclip app keeps file-installed skills and the Claude Code plugin current.
+An npm-installed CLI reports `cli_outdated` with the exact update command when it is stale.
+
 ## What you get
 
 - The `tellclip` CLI — on the agent's PATH in Claude Code and installed through

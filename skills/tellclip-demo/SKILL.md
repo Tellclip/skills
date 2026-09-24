@@ -10,6 +10,8 @@ description: >
   chained marks, authored cursor and transcript tracks, zoom/cut/speed edits,
   and upload.
   Records real product environments only — a mock needs explicit approval.
+metadata:
+  version: "0.2.4"
 ---
 
 # Recording a product demo with tellclip
@@ -43,6 +45,20 @@ Authenticate when the task needs organization tools.
 
 Everything below is the CLI workflow for recording and editing a local draft.
 
+## Agent Editing mode
+
+The editor can stay open while the CLI edits its recording. The first
+mutating command activates a short agent lease and makes that editor read-only
+until the command sequence goes idle. Read-only inspection commands do not
+activate the lease. The robot button in the editor only copies the prompt; it
+does not grant access.
+
+The person can click **Switch to Manual Mode** at any time. If any command
+returns `agent_stopped`, stop immediately. Do not retry automatically. Wait
+until the person explicitly asks you to continue. `session_open_in_editor` is
+only a compatibility error from older Tellclip versions; ask the person to
+update Tellclip or close the editor if it appears.
+
 Drive the browser with `agent-browser` (Vercel's agent CLI). Because both
 tools are bash commands, actions, marks and sleeps chain inside a single
 shell script — full interactivity, ms-accurate timing, and no LLM turnaround
@@ -56,7 +72,8 @@ single script it ran 23s raw / 13s cut.
 
 ## Prereqs
 
-- `tellclip` CLI: `npm i -g tellclip` (auto-launches the Tellclip app).
+- `tellclip` CLI: `npm i -g tellclip@latest` (auto-launches the Tellclip app).
+  If a command returns `cli_outdated`, follow its `next` and retry.
 - `agent-browser`: `brew install agent-browser` (or `npm i -g agent-browser`),
   then `agent-browser install` once to download its browser.
 - `jq` (used by the bundled helper).
@@ -314,8 +331,8 @@ take and a 13s one.
 
 - `tellclip speed <start> <end> 3` fast-forwards boring stretches (forms,
   loading) — better than cutting when the viewer should see it happen.
-- `tellclip preview` opens the human editor (close it before further CLI
-  edits).
+- `tellclip preview` ends Agent Editing mode, reloads the editor from disk,
+  focuses it, and hands the recording back for human review from the start.
 
 ## Title and summary
 
