@@ -11,7 +11,7 @@ description: >
   and upload.
   Records real product environments only — a mock needs explicit approval.
 metadata:
-  version: "0.2.5"
+  version: "0.2.6"
 ---
 
 # Recording a product demo with tellclip
@@ -31,11 +31,17 @@ organization operations itself.
   render, save, and share.
 - For an MP4 that already exists (any OS, CI, no app), use
   `tellclip upload file.mp4`. The agent that made the video authors its
-  content: `--transcript`, `--chapters`, `--summary`. See `tellclip guide`.
+  content: `--transcript`, `--chapters`, `--summary`, and `--thumbnail
+  <seconds>`. For the thumbnail, pick the frame that best shows what the clip
+  is about, never a fade or a blank frame, and look at it before uploading.
+  See `tellclip guide`.
 - The hosted Tellclip **MCP** works with authenticated organization data. Use
   its tools for members, workspaces, uploaded clips, transcripts, frames,
   comments, and organization-side clip settings. It cannot record or edit a
   local draft.
+  Every organization has an Agents workspace for clips that are not for
+  people (feedback recorded for a coding agent, short proof-of-work clips);
+  file such a clip there with MCP `move_clip`.
 
 The CLI cannot browse the organization. MCP cannot record or edit a local
 draft. They are complementary; never substitute one for the other.

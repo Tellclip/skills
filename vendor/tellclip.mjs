@@ -329,7 +329,7 @@ function deleteAppSession() {
 }
 
 // src/version.ts
-var cliVersion = true ? "0.2.5" : "dev";
+var cliVersion = true ? "0.2.6" : "dev";
 function isVersionOlder(candidate, minimum) {
   const candidateParts = numericVersion(candidate);
   const minimumParts = numericVersion(minimum);
@@ -379,7 +379,8 @@ Tellclip does not transcribe uploads. You know what the video shows, so
 author the content and send it with the upload:
 
   tellclip upload demo.mp4 --title "Demo" \\
-    --transcript track.json --chapters chapters.json --summary "\u2026"
+    --transcript track.json --chapters chapters.json --summary "\u2026" \\
+    --thumbnail 4.5
 
 - \`--transcript\`: the \`transcript set\` cues JSON
   ({"cues":[{"start":1.5,"end":3.2,"text":"Open Settings."}]}) or a WebVTT
@@ -387,6 +388,12 @@ author the content and send it with the upload:
 - \`--chapters\`: {"chapters":[{"start":0,"title":"Intro"}]}, 1\u201350 chapters,
   starts rounded down to whole seconds and strictly increasing, titles up to 120 characters.
 - \`--summary\`: 2\u20134 sentences, up to 600 characters.
+- \`--thumbnail\`: the second whose frame becomes the thumbnail and poster.
+  Pick the frame that best shows what the clip is about: the key screen or
+  the finished result. Never pick a fade, a blank or loading frame, or a
+  transition. Look at it first:
+  \`ffmpeg -ss 4.5 -i demo.mp4 -frames:v 1 thumb.jpg\`. Without it, Tellclip
+  uses the most detailed frame of the first 5 seconds.
 Times are seconds in the video. Everything is checked before the video
 transfers. With a transcript, Tellclip generates any chapters or summary you
 leave out; it never replaces what you authored.
@@ -406,6 +413,9 @@ Uploads require an active trial or subscription.
 - Tellclip's hosted MCP works with authenticated organization data: members,
   workspaces, uploaded clips, transcripts, frames, comments, and
   organization-side clip settings.
+- Every organization has an Agents workspace for clips that are not for
+  people: feedback recorded for a coding agent and short proof-of-work clips.
+  Use MCP move_clip to file a clip there when that is what it is.
 
 The CLI cannot browse the organization.
 MCP cannot record or edit a local draft. Neither substitutes for the other.
@@ -1187,6 +1197,7 @@ USAGE
   tellclip --version
   tellclip upload <file.mp4> [--title <title>] [--transcript <cues.json|file.vtt>]
                   [--chapters <chapters.json>] [--summary <text>]
+                  [--thumbnail <seconds>]
   tellclip targets
   tellclip record (--window <id|title> | --app <name|bundle-id> | --display <id|main> | --region <x,y,WxH>)
                   [--system-audio]
@@ -1344,8 +1355,14 @@ function parseSummaryInput(source) {
 
 // src/upload.ts
 var maxUploadBytes = 1e9;
-var uploadUsage = "Usage: tellclip upload <file.mp4> [--title <title>] [--transcript <cues.json|file.vtt>] [--chapters <chapters.json>] [--summary <text>]";
-var valueFlags = ["--title", "--transcript", "--chapters", "--summary"];
+var uploadUsage = "Usage: tellclip upload <file.mp4> [--title <title>] [--transcript <cues.json|file.vtt>] [--chapters <chapters.json>] [--summary <text>] [--thumbnail <seconds>]";
+var valueFlags = [
+  "--title",
+  "--transcript",
+  "--chapters",
+  "--summary",
+  "--thumbnail"
+];
 function parseUploadArgs(args) {
   let file;
   const values = {};
@@ -1361,12 +1378,16 @@ function parseUploadArgs(args) {
   if (!title || title.length > 200)
     throw new UsageError("Title must contain 1\u2013200 characters.");
   const resolve = (value) => value === void 0 ? void 0 : path2.resolve(value);
+  const thumbnail = values["--thumbnail"] === void 0 ? void 0 : Number(values["--thumbnail"]);
+  if (thumbnail !== void 0 && (values["--thumbnail"].trim() === "" || !Number.isFinite(thumbnail) || thumbnail < 0))
+    throw new UsageError("--thumbnail needs a time in seconds, e.g. 4.5.");
   return {
     file: path2.resolve(file),
     title,
     transcript: resolve(values["--transcript"]),
     chapters: resolve(values["--chapters"]),
-    summary: values["--summary"] === void 0 ? void 0 : parseSummaryInput(values["--summary"])
+    summary: values["--summary"] === void 0 ? void 0 : parseSummaryInput(values["--summary"]),
+    thumbnail
   };
 }
 async function readAuthoredFile(file) {
@@ -1528,6 +1549,13 @@ async function uploadFile(args, deps = {}) {
       duration
     ) : void 0;
     const chapters = authored.chapters ? parseChaptersInput(await readAuthoredFile(authored.chapters), duration) : void 0;
+    if (authored.thumbnail !== void 0 && authored.thumbnail >= duration)
+      throw cliError(
+        "invalid_thumbnail",
+        `--thumbnail must be before the video ends (${duration.toFixed(2)} s).`,
+        "Pick a time inside the video.",
+        2
+      );
     const upload = await request("", "POST", {
       title,
       size_bytes: info.size,
@@ -1606,7 +1634,8 @@ async function uploadFile(args, deps = {}) {
     const content = {
       ...transcript === void 0 ? {} : { transcript_uploaded: true },
       ...authored.summary === void 0 ? {} : { summary: authored.summary },
-      ...chapters === void 0 ? {} : { chapters }
+      ...chapters === void 0 ? {} : { chapters },
+      ...authored.thumbnail === void 0 ? {} : { thumbnail_seconds: authored.thumbnail }
     };
     process.stderr.write("Validating video\u2026\n");
     publishing = true;
