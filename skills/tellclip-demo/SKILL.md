@@ -11,7 +11,7 @@ description: >
   and upload.
   Records real product environments only — a mock needs explicit approval.
 metadata:
-  version: "0.2.6"
+  version: "0.2.7"
 ---
 
 # Recording a product demo with tellclip
@@ -241,6 +241,15 @@ are for.
    recording has none of.
 2. Add **one** zoom, on the single moment the clip exists to show. Zooms
    come BEFORE cuts so dead-air suggestions route around them.
+   If a secret is in the take (a token, an email, a real customer name),
+   `tellclip mask add <start> <end> --rect x,y,WxH` blurs that region
+   for those seconds; over-cover by a margin and check `tellclip frame`.
+   `tellclip highlight add <start> <end> --rect x,y,WxH` dims everything but
+   that region instead — a pointer when the surroundings must stay in view.
+   If the take captured more than the clip is about (desktop around a
+   window, browser chrome around a page), `tellclip crop set x,y,WxH` keeps
+   that rectangle for the whole clip. Crop first: afterwards `tellclip frame`
+   shows the cropped picture and zoom and region coordinates are read off it.
 3. `tellclip suggest` returns still stretches detected from the video itself
    as cut ranges that never touch your zooms. Review each against meaning
    before applying with `tellclip cut` (or `suggest --apply` to take all):

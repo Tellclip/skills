@@ -329,7 +329,7 @@ function deleteAppSession() {
 }
 
 // src/version.ts
-var cliVersion = true ? "0.2.6" : "dev";
+var cliVersion = true ? "0.2.7" : "dev";
 function isVersionOlder(candidate, minimum) {
   const candidateParts = numericVersion(candidate);
   const minimumParts = numericVersion(minimum);
@@ -556,7 +556,11 @@ captured window \u2014 the RAW capture, exactly what \`tellclip frame <t>\` extr
 as PNG; read coordinates off that image (x = px/width, y = py/height). The
 shared clip is rendered with a styled background and padding around the
 capture, but that never affects your coordinates: the renderer maps them into
-the styled layout itself. Never compensate for padding. Browser client
+the styled layout itself. Never compensate for padding. After \`tellclip crop
+set\`, \`frame\` renders the cropped picture and every edit coordinate (zoom
+\`--at\`, mask and highlight \`--rect\`, the \`edits\` rows) is 0-1 of THAT
+picture \u2014 read them off the frame as always. Marks and cursor tracks are
+recorded before any crop and stay in the full capture. Browser client
 coordinates need the window-chrome offset added
 (x = (chrome_left + clientX) / window_width) \u2014 when in doubt, frame-verify.
 
@@ -617,6 +621,27 @@ one per meaningful hover.
 - Unedited recordings get automatic zooms at share time (from detected
   clicks, if any). \`tellclip zoom clear\` opts out; any \`zoom add\` takes full
   manual control.
+- \`tellclip mask add <start> <end> --rect x,y,WxH\` blurs a region of the
+  screen for a source-time range \u2014 the only way to hide a secret (a token, an
+  email, a customer name) that is already in the take. The rect is normalized
+  0-1 from the top-left of the frame \`tellclip frame\` shows; the blur follows zooms and
+  survives cuts. Over-cover by a margin in space and time: a mask that ends
+  at the last character leaves its edge readable. One mask per moment; make
+  it bigger rather than adding an overlapping one. Verify with
+  \`tellclip frame\`.
+- \`tellclip highlight add <start> <end> --rect x,y,WxH\` is the opposite: the
+  rect stays clear and the rest of the screen dims to half, for the one
+  control the viewer should look at. Same rules as masks; it is a stronger
+  pointer than a zoom when the layout around the control matters.
+- \`tellclip crop set x,y,WxH\` keeps one rectangle of the captured frame for
+  the WHOLE clip and drops the rest \u2014 for a take that captured more than the
+  clip is about (a window plus desktop, a page plus browser chrome). Crop
+  FIRST, before zooms and regions: the rect is measured on the uncropped
+  capture, and afterwards \`frame\` shows the cropped picture and zoom and
+  region coordinates are read off that. The output is the crop's own pixel
+  size; zooms, masks, highlights and the cursor follow it. Each side must be
+  at least 0.05 of the frame; anything smaller is a zoom's job. To change a
+  crop, \`tellclip crop clear\`, \`frame\`, then \`crop set\` again.
 - Sessions: every response echoes which session was touched. Commands default
   to the latest session; pass --session <id> when working with several takes.
   Only the newest 10 sessions are kept.
@@ -726,7 +751,8 @@ var valueOptions = /* @__PURE__ */ new Set([
   "--epoch-ms",
   "--out",
   "--file",
-  "--min-still"
+  "--min-still",
+  "--rect"
 ]);
 var booleanFlags = /* @__PURE__ */ new Set([
   "--system-audio",
@@ -799,6 +825,22 @@ function regionObject(text) {
     }
   }
   throw new UsageError(`--region must be 'x,y,WxH' (e.g. 0,38,1280x800), got '${text}'.`);
+}
+function rectObject(text, name) {
+  const parts = splitNonEmpty(text, ",");
+  if (parts.length === 3 && parts[2].includes("x")) {
+    const size = splitNonEmpty(parts[2], "x");
+    if (size.length === 2) {
+      const [x, y] = [parseDouble(parts[0]), parseDouble(parts[1])];
+      const [width, height] = [parseDouble(size[0]), parseDouble(size[1])];
+      if (x !== void 0 && y !== void 0 && width !== void 0 && height !== void 0) {
+        return { x, y, width, height };
+      }
+    }
+  }
+  throw new UsageError(
+    `${name} must be 'x,y,WxH' with normalized 0-1 values (e.g. 0.1,0.2,0.3x0.08), got '${text}'.`
+  );
 }
 function editSpec(op, parsed, fields = {}) {
   const body = { op };
@@ -893,6 +935,55 @@ function makeRequestSpec(command, args) {
           return editSpec("zoom_clear", parsed);
         default:
           throw new UsageError(`Unknown zoom subcommand '${subcommand}'.`);
+      }
+    }
+    case "mask":
+    case "highlight": {
+      const subcommand = parsed.positional[0];
+      if (subcommand === void 0) {
+        throw new UsageError(`${command} needs a subcommand: add, list, or clear.`);
+      }
+      switch (subcommand) {
+        case "add": {
+          if (parsed.positional.length !== 3) {
+            throw new UsageError(
+              `${command} add needs start and end seconds and --rect: tellclip ${command} add 3 7 --rect 0.1,0.2,0.3x0.08.`
+            );
+          }
+          const rect = parsed.options.get("--rect");
+          if (rect === void 0) {
+            throw new UsageError(`${command} add needs --rect x,y,WxH (normalized 0-1, top-left).`);
+          }
+          return editSpec(`${command}_add`, parsed, {
+            start: double(parsed.positional[1], "start"),
+            end: double(parsed.positional[2], "end"),
+            rect: rectObject(rect, "--rect")
+          });
+        }
+        case "list":
+          return editSpec(`${command}_list`, parsed);
+        case "clear":
+          return editSpec(`${command}_clear`, parsed);
+        default:
+          throw new UsageError(`Unknown ${command} subcommand '${subcommand}'.`);
+      }
+    }
+    case "crop": {
+      const subcommand = parsed.positional[0];
+      if (subcommand === void 0) {
+        throw new UsageError("crop needs a subcommand: set or clear.");
+      }
+      switch (subcommand) {
+        case "set": {
+          if (parsed.positional.length !== 2) {
+            throw new UsageError("crop set needs the rectangle: tellclip crop set 0.1,0.2,0.5x0.6.");
+          }
+          return editSpec("crop_set", parsed, { rect: rectObject(parsed.positional[1], "crop set") });
+        }
+        case "clear":
+          return editSpec("crop_clear", parsed);
+        default:
+          throw new UsageError(`Unknown crop subcommand '${subcommand}'.`);
       }
     }
     case "cut":
@@ -1208,6 +1299,11 @@ USAGE
   tellclip cancel
   tellclip zoom add <start> <end> [--level <1-5>] [--at <x,y>] [--session <s>]
   tellclip zoom list | zoom clear [--session <s>]
+  tellclip mask add <start> <end> --rect <x,y,WxH> [--session <s>]
+  tellclip mask list | mask clear [--session <s>]
+  tellclip highlight add <start> <end> --rect <x,y,WxH> [--session <s>]
+  tellclip highlight list | highlight clear [--session <s>]
+  tellclip crop set <x,y,WxH> | crop clear [--session <s>]
   tellclip suggest [--min-still <seconds>] [--apply] [--session <s>]
   tellclip cut <start> <end> [--session <s>]
   tellclip speed <start> <end> <rate> [--session <s>]
