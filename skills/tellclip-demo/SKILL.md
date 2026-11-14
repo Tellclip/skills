@@ -10,7 +10,7 @@ description: >
   authored transcript, QA, and upload.
   Records real product environments only — a mock needs explicit approval.
 metadata:
-  version: "0.2.8"
+  version: "0.2.9"
 ---
 
 # Recording a product demo with tellclip
@@ -166,6 +166,14 @@ signed out the first time. Sign in with steps when you were given
 credentials. Otherwise agree it with the person, then
 `tellclip browser open <url> --show` brings the window to the front for
 them, once.
+
+When the flow needs the person's real accounts and they installed the
+Tellclip extension in Chrome, add `--own-browser` (and `--allow <site,…>`
+for a sign-in host) to `browser open`: the same steps then run in one window
+of their own, signed-in Chrome. Only those sites open, and a click on Delete,
+Send, Pay and the like needs `"confirm": true`, sent only after the person
+said yes. Close it when done: Chrome shows a debugging bar in all their
+windows while it is open.
 
 ## The human keeps working — never interrupt them
 

@@ -89,7 +89,7 @@ import { homedir as homedir2 } from "node:os";
 import { join } from "node:path";
 
 // src/version.ts
-var cliVersion = true ? "0.2.8" : "dev";
+var cliVersion = true ? "0.2.9" : "dev";
 function isVersionOlder(candidate, minimum) {
   const candidateParts = numericVersion(candidate);
   const minimumParts = numericVersion(minimum);
@@ -703,6 +703,25 @@ Sign in with steps when you were given credentials. Otherwise agree it with
 the person, then \`tellclip browser open <url> --show\` brings the window to
 the front for them, once; the profile remembers.
 
+Own browser. When the flow needs the person's real accounts and they have
+the Tellclip extension in Chrome, \`tellclip browser open --own-browser <url>
+[--allow accounts.google.com,\u2026]\` drives one popup window of their own,
+signed-in Chrome instead; every other command is the same. The window opens
+behind their windows; the OS cursor, their focus and their clipboard are left
+alone, as with the capture browser. While it is open, Chrome shows
+"Tellclip started debugging this browser" in all their windows (its Cancel
+ends the session: \`browser_gone\`), so close it when done. The agent may open
+the URL's site and the \`--allow\` sites only: another goto is
+\`site_not_allowed\`, a link off them is stopped (\`blocked_navigation\` in the
+row). A click on Delete, Send, Pay, Publish and the like returns
+\`confirmation_required\`: ask the person, then resend the step with
+\`"confirm": true\` (\`--confirm\`); the check reads English control names,
+so treat it as a safety net, not permission. Enter or Space on a focused
+control is checked the same way. A JavaScript confirm is answered no unless
+the step has \`confirm\` (the row's \`dialogs\` says so). Its take is cropped
+to the page. Without the extension: \`extension_not_connected\` (the first
+connection can take 30 s; Chrome needs a window open); drop \`--own-browser\`.
+
 Limits: one capture browser and one take at a time; one tab (a link that
 opens a new tab is not followed, \`goto\` its URL instead); no steps inside
 cross-origin iframes; native \`<select>\` menus and file pickers are not
@@ -950,7 +969,8 @@ one per meaningful hover.
 
 Everything in the editor's inspector is one object. \`tellclip style get\`
 returns background, padding, corner_radius, shadow, aspect_ratio,
-zoom_effects, cursor {visible, size, smoothing, press_effect, ripple},
+zoom_effects, cursor {visible, size, smoothing, press_effect, ripple, shortcuts,
+individual_keys (typing too; this draft only)},
 webcam {visible, anchor, frame_type, roundness, size} and audio
 {mic_muted, mic_delay, noise_removed, system_muted} and export {quality,
 frame_rate}, plus \`available\`: the legal background ids, aspect ratios,
@@ -1149,7 +1169,8 @@ var valueOptions = /* @__PURE__ */ new Set([
   "--label",
   "--hold",
   "--title",
-  "--summary"
+  "--summary",
+  "--allow"
 ]);
 var booleanFlags = /* @__PURE__ */ new Set([
   "--system-audio",
@@ -1167,7 +1188,9 @@ var booleanFlags = /* @__PURE__ */ new Set([
   "--no-auto-edit",
   "--sheet",
   "--record",
-  "--stop"
+  "--stop",
+  "--own-browser",
+  "--confirm"
 ]);
 function parseArgs(args) {
   const parsed = { positional: [], options: /* @__PURE__ */ new Map(), flags: /* @__PURE__ */ new Set() };
@@ -1221,6 +1244,7 @@ function browserStepSpec(step, parsed) {
   const hold = parsed.options.get("--hold");
   if (hold !== void 0) step.hold = double(hold, "--hold");
   if (parsed.flags.has("--off-camera")) step.off_camera = true;
+  if (parsed.flags.has("--confirm")) step.confirm = true;
   return { method: "POST", path: "/rpc/browser", body: { op: "act", steps: [step] } };
 }
 function splitNonEmpty(text, separator) {
@@ -1368,6 +1392,16 @@ function makeRequestSpec(command, args) {
             body.height = height;
           }
           if (parsed.flags.has("--show")) body.show = true;
+          if (parsed.flags.has("--own-browser")) body.own_browser = true;
+          const allow = parsed.options.get("--allow");
+          if (allow !== void 0) {
+            if (!parsed.flags.has("--own-browser")) {
+              throw new UsageError("--allow adds sites to an --own-browser session: tellclip browser open --own-browser <url> --allow accounts.google.com.");
+            }
+            const sites = splitNonEmpty(allow, ",").map((site) => site.trim()).filter((site) => site !== "");
+            if (sites.length === 0) throw new UsageError("--allow needs one or more sites, separated by commas.");
+            body.allow = sites;
+          }
           return { method: "POST", path: "/rpc/browser", body };
         }
         case "snapshot": {
@@ -2340,7 +2374,7 @@ USAGE
   tellclip mark <label> [--at <x,y>] [--t <seconds> | --epoch-ms <ms>] [--session <s>]
   tellclip stop [--no-auto-edit]
   tellclip cancel
-  tellclip browser open [<url>] [--viewport <W>x<H>] [--show]
+  tellclip browser open [<url>] [--viewport <W>x<H>] [--show] [--own-browser [--allow <site,\u2026>]]
   tellclip browser snapshot [--full]
   tellclip browser act [--json <steps> | --file <path>] [--record] [--stop] [--title <text>] [--summary <text>]  # or steps JSON on stdin; --record --stop is a whole take in one call; a step's "zoom": 2 is the clip's one zoom
   tellclip browser click <target>
@@ -2403,8 +2437,13 @@ agent integrations, request Screen Recording permission, sign in, and test a cli
 --wait sets the permission and sign-in wait in seconds (default 120).
 
 Browser single-step commands accept --label <text>, --hold <seconds>,
-and --off-camera. Targets are refs (e12), role:name (button:Create), or
-x,y (640,300) in viewport CSS pixels.
+--off-camera and --confirm. Targets are refs (e12), role:name (button:Create),
+or x,y (640,300) in viewport CSS pixels.
+
+--own-browser drives one window of the person's own, signed-in Chrome through
+the Tellclip extension instead of the capture browser. The agent may open the
+URL's site and the --allow sites only; a click on Delete, Send, Pay and the like
+needs "confirm": true, which you send only after the person said yes.
 
 All output is JSON. Edit and transcript cue times are seconds in the source
 recording; edit coordinates are normalized 0-1 from the top-left of the captured
