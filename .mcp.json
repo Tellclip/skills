@@ -3,6 +3,11 @@
     "tellclip": {
       "type": "http",
       "url": "https://tellclip.com/mcp"
+    },
+    "tellclip-app": {
+      "type": "stdio",
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/tellclip-mcp",
+      "args": []
     }
   }
 }

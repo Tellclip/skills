@@ -1,24 +1,33 @@
 ---
 name: tellclip-demo
 description: >
-  Record, edit, and publish a product demo clip with the `tellclip` CLI while
-  driving a browser with `agent-browser`. Use when asked to record a demo,
-  capture a product walkthrough, make a marketing clip of a flow, or share a
-  screen recording of automated actions. Covers staging the demo state,
-  rehearsing before the take, recording the whole flow in one shell
-  invocation with human pacing, clean-browser launch, precise timing via
-  chained marks, authored cursor and transcript tracks, zoom/cut/speed edits,
-  and upload.
+  Record, edit, and publish a product demo clip with the `tellclip` CLI. Use
+  when asked to record a demo, capture a product walkthrough, make a marketing
+  clip of a flow, record a fix working, or share a screen recording of
+  automated actions. Tellclip opens and drives its own capture browser, so a
+  web flow needs no other tool. Covers picking a real environment, staging,
+  recording step by step with the pacing handled for you, the one zoom, an
+  authored transcript, QA, and upload.
   Records real product environments only — a mock needs explicit approval.
 metadata:
-  version: "0.2.7"
+  version: "0.2.8"
 ---
 
 # Recording a product demo with tellclip
 
 `tellclip` remote-controls the Tellclip macOS app. Every command prints one
 JSON object; errors carry `{"error":{code,message,next}}` where `next` is the
-recovery step — follow it. Full contract: run `tellclip guide`.
+recovery step — follow it.
+
+This skill is the whole contract for a web flow. Do not run `tellclip guide`
+or `--help` first: every command you need is shown below with its options.
+(`tellclip guide` is the long reference for native-app takes and uploads.)
+
+**Every call is a model turn, and turns are what make a take slow.** The
+short path for a web flow is three calls: `browser open`, one `browser act
+--record --stop` with the whole flow, its zoom, title and summary, and one
+look at the contact sheet. Chain commands that do not need each other's
+output with `&&` in one call.
 
 ## Route work to the correct Tellclip interface
 
@@ -43,8 +52,14 @@ organization operations itself.
   people (feedback recorded for a coding agent, short proof-of-work clips);
   file such a clip there with MCP `move_clip`.
 
-The CLI cannot browse the organization. MCP cannot record or edit a local
-draft. They are complementary; never substitute one for the other.
+- In Claude Code the plugin also adds the **`tellclip-app`** MCP server: the
+  same local operations as tools (`browser_open`, `browser_act`, `record`,
+  `stop`, the edit tools, `share`), served by the app on this Mac. A tool takes
+  the same fields as its command. Use the tools when you have them, the CLI
+  otherwise; everything below applies to both.
+
+The CLI and `tellclip-app` cannot browse the organization. The hosted MCP
+cannot record or edit a local draft. Never substitute one for the other.
 
 Their authentication is separate. `tellclip login` signs in the local app/CLI
 session used by `tellclip share`; it does not authenticate the hosted MCP. For
@@ -68,24 +83,25 @@ until the person explicitly asks you to continue. `session_open_in_editor` is
 only a compatibility error from older Tellclip versions; ask the person to
 update Tellclip or close the editor if it appears.
 
-Drive the browser with `agent-browser` (Vercel's agent CLI). Because both
-tools are bash commands, actions, marks and sleeps chain inside a single
-shell script — full interactivity, ms-accurate timing, and no LLM turnaround
-anywhere in the recording.
-
-**A demo is a take, not a transcript of your tool calls.** Stage the app,
-rehearse with the recorder off, then record the whole flow in ONE shell
-invocation. Your reasoning time between two tool calls is dead air on camera:
-the same flow driven one call per click ran 83s raw / 29s cut; chained into a
-single script it ran 23s raw / 13s cut.
+**Tellclip drives the page.** For a web flow you bring no browser driver:
+`tellclip browser …` opens Tellclip's own capture browser and performs each
+click, key and scroll itself. It knows when and where each action happened
+and when the page finished reacting. So there is no sleep table, no rehearsal
+for timing, no cursor to author and no dead air to cut: your thinking time
+between two steps never reaches the clip.
 
 ## Prereqs
 
-- `tellclip` CLI: `npm i -g tellclip@latest` (auto-launches the Tellclip app).
-  If a command returns `cli_outdated`, follow its `next` and retry.
-- `agent-browser`: `brew install agent-browser` (or `npm i -g agent-browser`),
-  then `agent-browser install` once to download its browser.
-- `jq` (used by the bundled helper).
+- The Tellclip app, and Google Chrome (or Edge, Brave, Chromium) on this Mac.
+- The `tellclip` CLI. The Claude Code plugin brings it; otherwise
+  `npm i -g tellclip@latest`. If a command returns `cli_outdated`, follow its
+  `next` and retry.
+
+On a Mac where Tellclip was never used, run `tellclip setup` first (or
+`npx -y tellclip@latest setup`). It installs the app when it is missing,
+asks the person for Screen Recording and a sign-in, and records a test clip;
+its `next` says what is left. Nothing else is needed. Do not install a
+browser driver for a web flow.
 
 ## 0. Pick the environment — real, or stop
 
@@ -119,36 +135,37 @@ software that did not exist. On this rung the fast move is the wrong move:
 stop and ask (rung 3). Building the page first and asking later — or not at
 all — is the exact failure this gate exists to prevent.
 
-## Launch a clean capture browser
+## Open the capture browser
 
 `<url>` is the surface picked in step 0.
 
 ```
-agent-browser open <url> --headed --args "--disable-infobars,about:blank"
-agent-browser set viewport 1600 900
+tellclip browser open <url>
 ```
 
-`set viewport` is a request, not a fact: the window can clamp to the screen
-or keep its old size, and every downstream number — marks, zoom targets,
-framing — silently drifts when the real size differs from the one you set.
-Read it back and require an exact match before recording:
+The window opens behind the person's windows and does not take focus. The
+page is 1600×900 at the screen's own pixel ratio (`--viewport WxH` for
+another size; the result says what you got). The result holds `snapshot`,
+the page as lines:
 
 ```
-agent-browser eval 'JSON.stringify({iw:innerWidth,ih:innerHeight,ow:outerWidth,oh:outerHeight})'
+navigation "Main"
+  link "Projects" [e11]
+heading "All projects"
+button "New" [e21] collapsed
+textbox "Search" [e22] value="apo"
 ```
 
-`iw`×`ih` must equal the viewport you set. If it does not, pick a size the
-screen actually fits and re-verify — never compensate in coordinates.
+`[e21]` is a ref. Act on a ref (`e21`), on a role and name (`button:New`), or
+on a viewport point (`640,300`). After the first snapshot every step prints a
+diff: `+` new, `-` gone, everything not shown unchanged with its ref still
+valid.
 
-The `--args` string is load-bearing: `--disable-infobars` suppresses the
-"Chrome for Testing is only for automated testing" banner, `about:blank`
-prevents a stray "New Tab" tab in the tab strip. CRITICAL: every later
-`open`/`goto` (mid-demo navigation) must repeat the exact same
-`--headed --args "..."` flags — agent-browser relaunches the browser when
-launch flags change, which brings the banner and stray tab back. Verify the
-window is clean during rehearsal with a throwaway session — `tellclip record
---window <id>`, `tellclip stop`, `tellclip frame 0.5` — and look at the PNG:
-clean window, and the size you set (a Retina capture is 2× the point size).
+The capture browser has its own profile and remembers sign-ins. It starts
+signed out the first time. Sign in with steps when you were given
+credentials. Otherwise agree it with the person, then
+`tellclip browser open <url> --show` brings the window to the front for
+them, once.
 
 ## The human keeps working — never interrupt them
 
@@ -156,20 +173,17 @@ The take runs on the human's machine while they use it. Their focus,
 cursor, and keyboard are untouchable — a demo that hijacks the screen is a
 failed demo even if the clip is perfect.
 
-- CDP input needs no focus: the capture window can sit BEHIND the human's
-  windows for the whole take and still record. Never activate or raise it,
-  and never send OS-level mouse or keyboard events — the authored cursor
-  track (below) exists precisely so the real cursor never has to move.
-- Launch and size the capture browser ONCE, up front — that launch is the
-  one focus steal the human expects. A mid-take relaunch (the launch-flags
-  trap above) flashes a fresh window at them on top of wrecking the take.
+- The capture window sits BEHIND the human's windows for the whole take and
+  still records. Never raise it (`--show` is for an agreed sign-in only), and
+  never send OS-level mouse or keyboard events.
 - UI that must appear in front of them — `tellclip login`'s browser
-  sign-in, `tellclip preview` — is setup, agreed with the human first,
-  never sprung mid-work.
+  sign-in, `tellclip preview`, `browser open --show` — is setup, agreed with
+  the human first, never sprung mid-work.
 - Tellclip holds up its end: a CLI take launches the app hidden, shows no
   recorder UI, and never captures the microphone or camera (system audio
   is opt-in via `--system-audio`). Only the menu bar shows the running
-  take.
+  take, and a second Chrome icon sits in the Dock while the capture browser
+  is open.
 - The machine stays theirs mid-take: they can still take screenshots, and
   they can stop your recording from the menu bar — if they do, your next
   command reports `not_recording`; do not fight it, ask before re-recording.
@@ -183,64 +197,117 @@ Nothing downstream catches a badly staged app — it costs a whole take.
 - Seed data so no empty state, error, or "contact sales" fallback appears on
   camera — real records created in the step-0 environment, never substitute
   UI. Walk each screen the take will visit and look at it.
+- Stage with the same `tellclip browser` steps; no take is running, so
+  nothing is on camera. `tellclip browser eval '<js>'` is the escape hatch
+  (clear storage, read a value).
 
-## 2. Rehearse with the recorder OFF
+## 2. Walk the flow first — only when it pays
 
-Walk the entire flow once, collecting what the take needs: element refs,
-scroll targets, coordinates. Three things to verify as you go:
+Record straight away (step 3) when the flow is short, you can name its
+elements from the first snapshot, and nothing in it is hard to undo. Your
+thinking time is cut, a wrong step is recovered off camera, and a bad take is
+discarded for free.
+
+Walk the flow first, with the recorder off, when it is long (more than about
+ten steps), when a step cannot be undone (it sends, pays, deletes), or when
+you do not yet know that every screen exists:
 
 - **Every screen and action in the take exists in the step-0 environment.**
-  The rehearsal is where the flow proves it is real. A missing screen,
-  button, or state is a step-0 problem — go back and ask the human; never
-  fill the gap with a mocked page or a hand-built stand-in.
-- **Every click actually mutated the UI.** `agent-browser click` dispatches
-  real CDP input, so it works — but a click on a mispicked ref, or any
-  synthetic `el.click()`, silently no-ops on Radix / Headless UI menus: the
-  call reports success and the menu never opens. Assert the menu/dialog
-  appeared. A dead click on camera is a retake, not an edit.
-- **Re-snapshot after every navigation** — `agent-browser snapshot -i` is
-  read-only and doesn't disturb the page. Refs go stale silently across
-  navigations, and stale refs are what lose takes.
+  A missing screen, button, or state is a step-0 problem — go back and ask
+  the human; never fill the gap with a mocked page or a hand-built stand-in.
+- **Every click changed the page.** Each step row says `changed`: `page`,
+  `navigation` or `none`. `none` after a click is a dead click: read the
+  snapshot and pick the right element. A dead click on camera is a retake.
+- Then put the app state back to the start.
 
-Then reset the app state back to the start. If a beat still needs you to
-*look* at output mid-take, you have not rehearsed enough.
+## 3. Record the take
 
-## 3. Record the take — one invocation
+**The whole take in one call** — the default when you can name each element
+by role and name (the snapshot from `browser open` shows them):
 
-`tellclip targets` → the window with `app_name == "Google Chrome for Testing"`,
-note `window_id`. Then write the whole take as a script and run it with one
-Bash call: copy `<skill-dir>/scripts/take-template.sh`, fill in the beats,
-`bash take.sh <window_id>`.
+```
+tellclip browser act --record --stop \
+  --title "New project from the dashboard" \
+  --summary "Creates a project from the New menu and shows it in the list." \
+  --json '[
+  {"click": {"role": "link", "name": "Projects"}},
+  {"click": {"role": "button", "name": "New"}},
+  {"click": {"role": "menuitem", "name": "Project"}},
+  {"type": "Apollo", "into": {"role": "textbox", "name": "Project name"}, "hold": 1.5},
+  {"click": {"role": "button", "name": "Create"}, "zoom": 2},
+  {"wait": {"text": "Apollo"}}]'
+```
 
-Every beat is one line — `sleep <pace>; tc-click @e5 "clicked Features"` —
-which clicks the element AND drops a mark at its center (bounding box +
-window-chrome offset measured live). Non-click beats mark themselves:
-`agent-browser scroll down 450 && tellclip mark "scrolled"`.
+It starts the take, runs the steps and ends it. Each step waits out the hold
+of the one before it, so the clip is paced exactly as in a step-by-step
+take: never add `sleep` or `wait` steps for pacing. A `wait` belongs to the
+step before it: that beat lasts until the text arrived. `"zoom": 2` on a step
+is the clip's one zoom (step 4), placed on that beat for you; `--title` and
+`--summary` set the words. So the edit needs no call of its own. The result
+has one row per step, `take` (the session and `auto_edit`) and `sheet` (see
+step 6), zoom included. If a step fails, the take is discarded: fix the step
+and run the call again. This is also how you record the same demo again
+after the UI changes.
 
-Pacing — you have no prior for human speed, so use these:
+**Step by step** — when you must read the page between steps to choose the
+next one:
 
-| beat | hold |
-| --- | --- |
-| menu / dropdown opens | 0.9–1.3s |
-| new screen or step | 1.5–2s before the next action |
-| click → dependent click, same screen | 0.6–0.8s |
-| final beat before stop | 2–2.5s |
+```
+tellclip record --browser
+tellclip browser click e31
+tellclip browser type "Apollo" --into e44 --hold 1.5
+tellclip browser click button:Create
+tellclip stop
+```
 
-Target: raw take under 30s, final clip 10–20s. If a beat needs more than
-~2.5s of stillness to make sense, it is two clips, not one long one. Sleeps
-are the only pacing you get; keeping helpers inside the script matters
-because shell state does not survive between agent tool calls.
+Each step is one beat. For each, the clip keeps 0.7 s before the action
+(the cursor glides in there) and a hold after the page settled: 1.0 s after
+a change, 1.7 s after a new screen, 2.2 s for the last step. `--hold
+<seconds>` sets it for one step: use it where the viewer has something to
+read. Everything between your steps is cut when you stop. So:
 
-Botched take? `tellclip cancel` discards it — cheap. Genuinely slow setup
-mid-flow (a long build, a human step) is what `tellclip pause` / `resume`
-are for.
+- Take the time you need between steps. Read each diff, then choose.
+- Never `sleep`: the pacing is in the beats, not in your timing.
+- Target: a final clip of 10–20 s. That is about six to ten steps. If a
+  beat needs more than ~2.5 s of stillness to make sense, it is two clips.
 
-## 4. Edit — cursor, one zoom, then cuts
+A wrong click on camera: recover with `--off-camera` steps (they are not in
+the clip), then go on. If the wrong click is already a beat you do not want,
+`tellclip cut <start> <end>` removes it after `stop` — the step row gave you
+its `t`. A take that went badly: `tellclip cancel` discards it — cheap.
 
-1. `tellclip cursor set --from-marks` — synthesizes the cursor the CDP
-   recording has none of.
-2. Add **one** zoom, on the single moment the clip exists to show. Zooms
-   come BEFORE cuts so dead-air suggestions route around them.
+A result that arrives late with nothing loading (a timer, a background job)
+is not waited for, and your thinking time after the step is cut. To keep
+the moment it arrives in the clip, give the step a longer `--hold`, or send
+the click and `{"wait": {"text": "Saved"}}` together in one `browser act`
+call.
+
+During a step-by-step take, several steps you already know still go in one
+`browser act --json '[…]'` call.
+
+`tellclip stop` (and `--stop`) writes the cursor track from the beats and
+cuts everything outside them. It prints `auto_edit` with the kept ranges and
+the clip length, and `sheet`. Both edits are ordinary ones the person can
+change in the editor.
+
+## 4. Edit — the one zoom, then words
+
+`stop` already wrote the cursor track and cut the dead air. A take in one
+call with `"zoom"`, `--title` and `--summary` is already edited: go to step 5.
+After a step-by-step take, what is left needs no output from one command for
+the next, so run it as ONE Bash call:
+
+```sh
+tellclip zoom add 12.1 14.2 --at 0.88,0.23 --level 2 \
+  && tellclip title "New project from the dashboard" \
+  && tellclip summary "Creates a project from the New menu and shows it in the list." \
+  && tellclip frame --sheet
+```
+
+1. Add **one** zoom, on the single moment the clip exists to show. Its time
+   and place are in that step's row: start about 0.3 s before `t`, end where
+   the beat ends, `--at` is the row's `at`. `zoom add <start> <end> --at x,y
+   --level <n>` is the whole syntax.
    If a secret is in the take (a token, an email, a real customer name),
    `tellclip mask add <start> <end> --rect x,y,WxH` blurs that region
    for those seconds; over-cover by a margin and check `tellclip frame`.
@@ -250,14 +317,17 @@ are for.
    window, browser chrome around a page), `tellclip crop set x,y,WxH` keeps
    that rectangle for the whole clip. Crop first: afterwards `tellclip frame`
    shows the cropped picture and zoom and region coordinates are read off it.
-3. `tellclip suggest` returns still stretches detected from the video itself
-   as cut ranges that never touch your zooms. Review each against meaning
-   before applying with `tellclip cut` (or `suggest --apply` to take all):
-   an information-bearing screen keeps 1.5–2s even though nothing moves on
-   it, and tail cuts often make the ending land abruptly. Always take the
-   head cut — there is a multi-second gap between `record` and your first
-   action. Animated content (looping video, spinners) is never flagged, so
-   judge those stretches yourself. `tellclip edits` after each mutation.
+   Layouts (`tellclip layout add <start> [<end>] --kind camera|split|screen`)
+   arrange the camera and the screen for a stretch and animate by
+   themselves; they need a camera take, which an agent's own silent take
+   never has, so use them only when editing a person's recording.
+2. Check the cuts against meaning. `tellclip edits` lists `kept_ranges`. A
+   beat that needed longer to read: `tellclip cut restore <start> <end>` on
+   the stretch after it. A beat you do not want: `tellclip cut <start> <end>`.
+3. Restyle only when asked: `tellclip style get` returns the inspector
+   (background, padding, corners, shadow, aspect ratio, cursor, webcam, audio)
+   with the legal values; `tellclip style set --json '{"padding":0.1}'`
+   changes just those keys, exactly like the editor.
 
 ## 5. Author the transcript after the edit
 
@@ -287,48 +357,43 @@ The edit is not the deliverable; the rendered clip is.
   `kept_ranges` / `zoom_ranges` against what you meant to build.
 - `tellclip transcript list` → the intended source `cues`, projected
   `caption_cues`, and `omitted_cue_count == 0`.
-- `tellclip frame <t>` at each mark → right page, right state, nothing
-  half-rendered. (Raw capture, so it checks content, not the styled render.)
-- Need the final framing checked? `tellclip save --out demo.mp4` and pull
-  2–3 frames from the file: zoom crop, cursor visible, no seam mid-motion.
+- **Read the contact sheet: one picture, one look.** `stop` returns
+  `sheet.path`: a tile per step of the finished clip (cursor, cuts and
+  background as rendered), each with its number, clip time and step. Check
+  that every step landed and the cursor is on the control. Do not call
+  `tellclip frame` per step.
+- After the edits in step 4, `tellclip frame --sheet` makes the sheet again
+  with the zoom in it. Add it to the end of the edit call.
+- `tellclip frame <t> --view output` is for one moment at full size, when a
+  tile is too small to judge (zoom framing, a blur's edge). `tellclip frame
+  <t>` (view edit) is the raw capture, for measuring a position.
 - `tellclip share` → share URL. Re-running replaces the same URL, so
   iterating on the edit is safe.
 
 The take script stays re-runnable: when the product UI changes, re-record
 deterministically instead of re-deriving the flow.
 
-## Timing: never estimate timestamps
+## Other windows and outside drivers
 
-Your tool-call turnaround is seconds — an estimated timestamp is a wrong
-timestamp. Chained `action && tellclip mark` keeps the gap ~100 ms, which is
-accurate enough to edit against directly. Times are SOURCE seconds and stay
-valid across cuts (cutting 0-2s does not renumber later timestamps).
+Recording a native app, or a page you must drive with your own tool? Then
+you are the one who knows when things happen: `tellclip targets`, `tellclip
+record --window <id>`, one chained shell call with your actions, `tellclip
+mark "label" --at x,y` after each and explicit sleeps between them, then
+`tellclip cursor set --from-marks` and `tellclip suggest --apply`. Run
+`tellclip guide` for that contract (pacing table, timing, coordinates).
 
-If you cannot use agent-browser (e.g. MCP-only browsing), inject a click
-logger before acting:
-`window.__tc=[];addEventListener('click',e=>__tc.push({t:Date.now(),x:e.clientX,y:e.clientY}),true)`
-then after `stop` batch retroactive marks:
-`tellclip mark "label" --epoch-ms <t> --at <x,y>`. Never record through the
-Claude-in-Chrome extension: it paints an orange cursor, viewport glow, and a
-debugging banner into the capture at the compositor level — they cannot be
-hidden. Any CDP driver (e.g. a raw Playwright script) also works with the
-same inline-mark discipline.
+Never record through the Claude-in-Chrome extension: it paints an orange
+cursor, a viewport glow and a debugging banner into the capture, and they
+cannot be hidden.
 
-## Positions: verify against a frame
+## Positions
 
-Coordinates are normalized 0-1 from the TOP-LEFT of the captured window —
-the raw capture, before the styled background/padding the final render wraps
-around it. Never compensate for that padding; the renderer maps your
-coordinates into the styled layout itself. `tc-click` computes positions for
-you; for anything manual, `tellclip frame <t>` extracts the exact raw frame
-as PNG — read positions off the image (`x = px/width`).
-
-## Cursor: author it, the recording has none
-
-CDP clicks never move the real macOS cursor. Positioned marks fix this in one
-command: `tellclip cursor set --from-marks` synthesizes human-like motion
-with click effects. Add non-click waypoints via `--file` if the demo needs
-hover movement between clicks.
+Coordinates in edit commands are normalized 0-1 from the TOP-LEFT of the
+captured window — the raw capture, before the styled background and padding
+the final render wraps around it. Never compensate for that padding. A step
+row's `at` is already in this space. For anything you place by eye,
+`tellclip frame <t>` extracts the frame as PNG — read positions off the image
+(`x = px/width`).
 
 ## Zooms are pointers, not polish
 
@@ -340,8 +405,8 @@ take and a 13s one.
 
 - Level 2 is the default; 1.5 for context, 3 for small UI. Start ~0.5s before
   the click and hold only as long as the thing is worth looking at.
-- Never zoom a stretch you expect `suggest` to cut: suggestions route AROUND
-  authored zooms, so a long zoom traps its own dead air inside the clip.
+- Keep a zoom inside one beat. A zoom that spans the cut between two beats
+  holds through the seam, but its glide must not cross one.
 - Unedited sessions get auto zooms at share time only if real clicks were
   captured — authored recordings should add their own.
 
@@ -373,5 +438,8 @@ After recording, set both before sharing.
   `save` additionally needs a paid plan. Both report structured errors with
   the fix in `next`.
 - The Tellclip app must be running; the CLI auto-launches it if not.
-- agent-browser's daemon survives between commands; `agent-browser close`
-  ends the session, `pkill -f agent-browser` forces a truly fresh launch.
+- The capture browser stays open between commands and keeps its sign-ins.
+  `tellclip browser close` quits it; it also closes after 10 idle minutes.
+- One capture browser, one take, one tab. A link that opens a new tab is not
+  followed (`goto` its URL instead), and steps do not reach inside
+  cross-origin iframes.

@@ -100,9 +100,13 @@ An npm-installed CLI reports `cli_outdated` with the exact update command when i
 - The `tellclip` CLI — on the agent's PATH in Claude Code and installed through
   npm for other clients. Every command prints one JSON object; errors carry a
   `next` field with the recovery step.
-- The `tellclip-demo` skill — staging, rehearsal, the one-shot take, a pacing
-  table, zoom restraint, and render QA, plus `tc-click` and a take template
-  for driving a browser with [`agent-browser`](https://github.com/vercel/agent-browser).
+- The `tellclip-demo` skill — picking a real environment, staging, recording a
+  web flow step by step in Tellclip's own capture browser (no other browser
+  tool to install), the one zoom, an authored transcript, and render QA.
+- In Claude Code, the `tellclip-app` MCP server — the app on this Mac as tools:
+  the capture browser, recording, editing and sharing. It is a small shell
+  bridge (`bin/tellclip-mcp`) that needs no Node; it starts the app when
+  needed. In another client, add a stdio MCP server that runs that script.
 - The hosted Tellclip MCP — find and inspect shared clips, read transcripts and
   frames, organize clips, change playback speed, and add comments. Claude Code,
   Codex, and Cursor connect through the plugin; other MCP clients can connect

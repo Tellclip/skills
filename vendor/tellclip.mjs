@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // src/auth.ts
-import { spawnSync } from "node:child_process";
-import http from "node:http";
+import { spawnSync as spawnSync2 } from "node:child_process";
+import http2 from "node:http";
 import { hostname } from "node:os";
 
 // src/errors.ts
@@ -81,6 +81,143 @@ function deleteLinuxSession(origin, configRoot) {
   }
 }
 
+// src/transport.ts
+import { spawnSync } from "node:child_process";
+import { readFileSync as readFileSync2 } from "node:fs";
+import http from "node:http";
+import { homedir as homedir2 } from "node:os";
+import { join } from "node:path";
+
+// src/version.ts
+var cliVersion = true ? "0.2.8" : "dev";
+function isVersionOlder(candidate, minimum) {
+  const candidateParts = numericVersion(candidate);
+  const minimumParts = numericVersion(minimum);
+  if (candidateParts === void 0 || minimumParts === void 0) return false;
+  const count = Math.max(candidateParts.length, minimumParts.length);
+  for (let index = 0; index < count; index += 1) {
+    const candidatePart = candidateParts[index] ?? 0;
+    const minimumPart = minimumParts[index] ?? 0;
+    if (candidatePart !== minimumPart) return candidatePart < minimumPart;
+  }
+  return false;
+}
+function numericVersion(version) {
+  const components = version.split(".");
+  if (components.length === 0 || components.some((component) => !/^\d+$/.test(component))) {
+    return void 0;
+  }
+  return components.map(Number);
+}
+
+// src/transport.ts
+var updateNext = "In Claude Code run `claude plugin update tellclip@tellclip` and restart the session; otherwise `npm i -g tellclip@latest`.";
+function discoveryFilePath() {
+  return join(homedir2(), "Library", "Application Support", "TellClip", "cli.json");
+}
+function readDiscoveryFile() {
+  try {
+    const object = JSON.parse(readFileSync2(discoveryFilePath(), "utf8"));
+    const { port, token } = object ?? {};
+    if (Number.isInteger(port) && typeof token === "string") {
+      return { port, token };
+    }
+  } catch {
+  }
+  return void 0;
+}
+function send(spec, endpoint, timeoutMs, version = cliVersion, signal) {
+  return new Promise((resolve2) => {
+    const payload = spec.method === "POST" ? JSON.stringify(spec.body ?? {}) : void 0;
+    const headers = {
+      authorization: `Bearer ${endpoint.token}`,
+      "x-tellclip-cli-version": version
+    };
+    if (payload !== void 0) {
+      headers["content-type"] = "application/json";
+      headers["content-length"] = Buffer.byteLength(payload);
+    }
+    const request = http.request(
+      { host: "127.0.0.1", port: endpoint.port, path: spec.path, method: spec.method, headers, signal },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on(
+          "end",
+          () => resolve2({ status: response.statusCode ?? 0, body: Buffer.concat(chunks) })
+        );
+        response.on("error", () => resolve2(void 0));
+      }
+    );
+    request.setTimeout(timeoutMs, () => request.destroy());
+    request.on("error", () => resolve2(void 0));
+    if (payload !== void 0) request.write(payload);
+    request.end();
+  });
+}
+async function probe(endpoint, version = cliVersion) {
+  const response = await send({ method: "GET", path: "/status" }, endpoint, 2e3, version);
+  if (response === void 0) return void 0;
+  let status = {};
+  try {
+    const parsed = JSON.parse(response.body.toString("utf8"));
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      status = parsed;
+    }
+  } catch {
+  }
+  if (typeof status.min_cli_version === "string" && isVersionOlder(version, status.min_cli_version)) {
+    throw cliError(
+      "cli_outdated",
+      `tellclip ${version} is older than the minimum supported version ${status.min_cli_version}.`,
+      updateNext,
+      1
+    );
+  }
+  if (typeof status.bundled_cli_version === "string" && isVersionOlder(version, status.bundled_cli_version)) {
+    process.stderr.write(
+      `tellclip ${version} is behind the version shipped with this Tellclip (${status.bundled_cli_version}). ${updateNext}
+`
+    );
+  }
+  if (typeof status.app_update_available === "string") {
+    process.stderr.write(`A Tellclip app update is available (${status.app_update_available})
+`);
+  }
+  return status;
+}
+function launchApp() {
+  const appPath = process.env.TELLCLIP_APP;
+  const args = appPath ? ["-g", "-j", appPath] : ["-g", "-j", "-b", "com.withmjp.tellclip"];
+  const result = spawnSync("/usr/bin/open", args, { stdio: "ignore" });
+  return result.status === 0;
+}
+var sleep = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
+async function connectOrLaunch() {
+  const known = readDiscoveryFile();
+  if (known && await probe(known)) return known;
+  if (!launchApp()) {
+    throw cliError(
+      "app_unreachable",
+      "The Tellclip app is not installed, so the CLI has nothing to control.",
+      "Install Tellclip from https://tellclip.com and open it once, then retry. For a non-standard location, set TELLCLIP_APP=/path/to/TellClip.app.",
+      3
+    );
+  }
+  const deadline = Date.now() + 15e3;
+  while (Date.now() < deadline) {
+    await sleep(250);
+    const endpoint = readDiscoveryFile();
+    if (endpoint && await probe(endpoint)) return endpoint;
+  }
+  throw cliError(
+    "app_unreachable",
+    "Tellclip is not responding on its control port.",
+    "Quit Tellclip if it is running, reopen it, then retry. The app must be running for the CLI to work.",
+    3
+  );
+}
+
 // src/auth.ts
 var appDefaultsDomain = "com.withmjp.tellclip";
 var appSessionKey = "TCAuthSession";
@@ -107,6 +244,22 @@ function appSessionPayload(input) {
     user: input.user,
     webBaseURL: input.webBaseURL
   });
+}
+async function loginWithApp(endpoint, timeoutMs = loginTimeoutMs, signal) {
+  const response = await send({ method: "POST", path: "/rpc/login", body: {} }, endpoint, timeoutMs, void 0, signal);
+  if (!response) throw loginFailed("Tellclip did not finish sign-in.");
+  let result;
+  try {
+    result = JSON.parse(response.body.toString("utf8"));
+  } catch {
+    throw loginFailed("Tellclip returned an unusable sign-in response.");
+  }
+  if (typeof result !== "object" || result === null || Array.isArray(result)) {
+    throw loginFailed("Tellclip returned an unusable sign-in response.");
+  }
+  const payload = result;
+  if (payload.error !== void 0) throw new EmitAndExit(payload, 1);
+  return payload;
 }
 async function standaloneLogin(deps = {}) {
   const base = deps.webBaseURL ?? normalizedWebBaseURL();
@@ -174,11 +327,11 @@ function startLoopbackListener() {
   return new Promise((resolveListener, rejectListener) => {
     let settle;
     let fail;
-    const callbackPromise = new Promise((resolve, reject) => {
-      settle = resolve;
+    const callbackPromise = new Promise((resolve2, reject) => {
+      settle = resolve2;
       fail = reject;
     });
-    const server = http.createServer((request, response) => {
+    const server = http2.createServer((request, response) => {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       if (!url.pathname.startsWith("/auth/callback")) {
         response.writeHead(404).end();
@@ -242,7 +395,7 @@ async function postJson(url, body) {
   return payload;
 }
 function withTimeout(promise, ms) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     const timer = setTimeout(() => {
       reject(
         cliError(
@@ -256,7 +409,7 @@ function withTimeout(promise, ms) {
     promise.then(
       (value) => {
         clearTimeout(timer);
-        resolve(value);
+        resolve2(value);
       },
       (error) => {
         clearTimeout(timer);
@@ -274,11 +427,11 @@ function loginFailed(message) {
   );
 }
 function openInBrowser(url) {
-  return spawnSync(process.platform === "linux" ? "xdg-open" : "/usr/bin/open", [url], { stdio: "ignore" }).status === 0;
+  return spawnSync2(process.platform === "linux" ? "xdg-open" : "/usr/bin/open", [url], { stdio: "ignore" }).status === 0;
 }
 function writeAppSession(payloadJson) {
   const hex = Buffer.from(payloadJson, "utf8").toString("hex");
-  const result = spawnSync("defaults", ["write", appDefaultsDomain, appSessionKey, "-data", hex], {
+  const result = spawnSync2("defaults", ["write", appDefaultsDomain, appSessionKey, "-data", hex], {
     stdio: "ignore"
   });
   if (result.status !== 0) {
@@ -291,7 +444,7 @@ function writeAppSession(payloadJson) {
   }
 }
 function readAppSession() {
-  const result = spawnSync("defaults", ["export", appDefaultsDomain, "-"], { encoding: "utf8" });
+  const result = spawnSync2("defaults", ["export", appDefaultsDomain, "-"], { encoding: "utf8" });
   if (result.status !== 0 || typeof result.stdout !== "string") return void 0;
   const match = result.stdout.match(
     new RegExp(`<key>${appSessionKey}</key>\\s*<data>\\s*([A-Za-z0-9+/=\\s]+?)\\s*</data>`)
@@ -325,33 +478,15 @@ function uploadToken(base) {
   return session.token;
 }
 function deleteAppSession() {
-  spawnSync("defaults", ["delete", appDefaultsDomain, appSessionKey], { stdio: "ignore" });
-}
-
-// src/version.ts
-var cliVersion = true ? "0.2.7" : "dev";
-function isVersionOlder(candidate, minimum) {
-  const candidateParts = numericVersion(candidate);
-  const minimumParts = numericVersion(minimum);
-  if (candidateParts === void 0 || minimumParts === void 0) return false;
-  const count = Math.max(candidateParts.length, minimumParts.length);
-  for (let index = 0; index < count; index += 1) {
-    const candidatePart = candidateParts[index] ?? 0;
-    const minimumPart = minimumParts[index] ?? 0;
-    if (candidatePart !== minimumPart) return candidatePart < minimumPart;
-  }
-  return false;
-}
-function numericVersion(version) {
-  const components = version.split(".");
-  if (components.length === 0 || components.some((component) => !/^\d+$/.test(component))) {
-    return void 0;
-  }
-  return components.map(Number);
+  spawnSync2("defaults", ["delete", appDefaultsDomain, appSessionKey], { stdio: "ignore" });
 }
 
 // src/guide.ts
 var agentGuideText = `# Tellclip agent guide (tellclip ${cliVersion})
+
+On a new machine, start with \`tellclip setup\`. It sets up the app and agent
+integrations, checks permission and sign-in, and records a short test clip.
+Read the file at \`skill_path\` in its JSON result and follow its \`next\` instructions.
 
 You are driving a screen recording of a real macOS window while you automate
 it (browser or any app), then polishing and sharing the result. Every command
@@ -372,7 +507,8 @@ For an existing MP4, use \`tellclip upload file.mp4 --title "Demo"\`.
 This command works on macOS and Linux without the Tellclip app.
 It requires Node.js 20 or later and FFmpeg, including ffprobe.
 Files must use 8-bit H.264 with 4:2:0 color and optional AAC audio.
-The size limit is 1 GB (1,000,000,000 bytes).
+The size limit is 5 GB (5,000,000,000 bytes).
+Clips can be up to 60 minutes long.
 The result is {"clip_id":"\u2026","url":"\u2026","status":"ready"}. Progress goes to stderr.
 
 Tellclip does not transcribe uploads. You know what the video shows, so
@@ -448,15 +584,149 @@ A demo is a TAKE, not a transcript of your tool calls. The whole difference
 between a clip that reads as human-made and one that reads as bot-made is
 pacing and restraint, and both are decided before you press record.
 
-## The loop
+## Browser demos \u2014 Tellclip drives the page
+
+For a web page, bring no browser driver. Tellclip opens its own capture
+browser (the Chrome installed on this Mac, with a profile Tellclip keeps, so
+a sign-in is done once) and performs each action itself. It knows when and
+where each action happened and when the page finished reacting, so there is
+no sleep table, no rehearsal for timing, no cursor to author and no dead air
+to cut.
+
+    tellclip browser open http://localhost:5173/app
+    tellclip browser click e12 --off-camera      # staging, before the take
+    tellclip record --browser
+    tellclip browser click e31                   # one step = one beat
+    tellclip browser type "Apollo" --into e44
+    tellclip browser click button:Create
+    tellclip stop                                # cursor and cuts are in place
+
+The window opens behind the person's windows and never takes focus. It
+renders at the screen's own pixel ratio, and \`open\` sizes the page to
+1600x900 (\`--viewport WxH\` for another size; the result says what you got).
+
+Reading the page. \`open\` and every step print \`snapshot\`: the page as
+lines, read from Chrome's accessibility tree.
+
+    navigation "Main"
+      link "Projects" [e11]
+    heading "All projects"
+    button "New" [e21] collapsed
+    textbox "Search" [e22] value="apo"
+
+\`[e21]\` is a ref: act on it. State follows the ref (\`expanded\`,
+\`checked\`, \`disabled\`, \`focused\`, \`value="\u2026"\`). After the first
+snapshot you get a diff (\`snapshot_kind: "diff"\`): \`+\` lines are new, \`-\`
+lines are gone, unmarked lines are the containers the new lines sit in, and
+every line not shown is unchanged with its ref still valid. After a
+navigation you get the whole page again. \`tellclip browser snapshot --full\`
+re-reads it.
+
+Targets. A ref (\`e21\`), a role and name (\`button:Create\`; stable across
+runs, and when several match, the one in view is used), or a viewport point
+(\`640,300\`, for a canvas).
+
+Steps: \`click\`, \`hover\`, \`type <text> [--into <target>]\`, \`press <key>\`
+(\`Enter\`, \`Escape\`, \`ArrowDown\`, \`Meta+K\`), \`scroll <pixels>\` or
+\`scroll --to <target>\`, \`goto <url>\`, \`wait <seconds>\` or
+\`wait --text "Saved"\`, \`eval <javascript>\` (the staging escape hatch; it
+prints the value). Clicks are real pointer events, so menus that open on
+pointerdown (Radix, Headless UI) open. Each step scrolls its element into
+view, waits until it holds still, checks nothing covers it, acts, and waits
+until the page settles: the DOM is quiet, the transitions the action started
+have ended, and the requests it started have finished (up to 1.2 s).
+
+Each step row tells you what happened:
+
+    {"action":"click","label":"clicked \\"New\\" button","changed":"page",
+     "settled":true,"t":12.41,"settled_t":12.73,"at":{"x":0.88,"y":0.23}}
+
+- \`changed: "none"\` after a click means the click did nothing. Do not go
+  on as if it worked: read the snapshot and pick the right element.
+- \`settled: false\` means the page was still moving after 8 s (a stream, an
+  endless loader). The step went on anyway.
+- A result that arrives late with no request behind it (a timer, a job that
+  finishes elsewhere) is not waited for. Put a \`wait\` for its text in the
+  same \`browser act\` call as the action, or give the step a longer hold;
+  a \`wait\` sent as a later call finds the result already there, and the
+  moment it arrived is in the gap that gets cut.
+
+Beats. While a \`record --browser\` take runs, every step is on camera. The
+clip keeps, for each step, 0.7 s before the action (the drawn cursor glides
+in there) and a hold after the page settled: 1.0 s after a change on the
+page, 1.7 s after a navigation, 2.2 s for the last step. \`--hold <seconds>\`
+sets it for one step: use it when the result needs reading. Everything
+between the beats, which is your own thinking time, is cut at \`stop\`. So
+take as long as you need between steps, and never \`sleep\`.
+
+\`--off-camera\` keeps a step out of the clip: use it to recover after a
+wrong click, or to prepare the next scene. A step sent while no take runs is
+never on camera.
+
+A known flow can go in one call. The steps run in order and stop at the
+first failure; the beats of the steps that worked are kept:
+
+    tellclip browser act --json '[
+      {"click": {"role": "link", "name": "Projects"}},
+      {"click": {"role": "button", "name": "New"}},
+      {"type": "Apollo", "into": {"role": "textbox", "name": "Project name"}, "hold": 1.5},
+      {"press": "Enter"}, {"wait": {"text": "Apollo"}}]'
+
+Add \`--record --stop\` to that call and it is the whole take: it starts the
+take, runs the steps and ends it. A failed step discards the take. In that
+call, \`"zoom": 2\` on a step is the clip's one zoom, placed on that beat at
+\`stop\` (start 0.3 s before the action, end with the beat), and \`--title\` /
+\`--summary\` set the words, so the edit needs no call of its own. A
+\`wait\` step is not a beat: it lengthens the beat before it.
+
+\`tellclip stop\` then does what you would do by hand: it writes the cursor
+track from the beats (\`cursor set --from-marks\`) and cuts everything outside
+them, and prints \`auto_edit\` with \`kept_ranges\` and
+\`edited_duration_seconds\`. Both are ordinary edits: \`cut restore\` and
+\`cursor clear\` undo them, the person can change them in the editor, and
+\`stop --no-auto-edit\` skips them. What is left for you: the one zoom (a
+step's \`t\` and \`at\` are its time and place), title, summary, transcript,
+QA and share, as below. \`stop\` also returns \`sheet\`: one picture with a
+tile per step of the finished clip, so checking the take is one look.
+
+Errors carry \`next\` and, for a failed step, the page as it is now
+(\`snapshot\`) and the rows of the steps that worked (\`completed_steps\`):
+\`stale_ref\` (pick a ref from the snapshot in the error), \`not_found\`,
+\`ambiguous_target\` (\`candidates\` lists the refs), \`obscured\` (something
+covers the element; close it first), \`not_visible\`, \`wait_timeout\`,
+\`geometry_mismatch\` and \`browser_window_not_found\` (the capture window is
+on another Space, minimized, or split across screens), \`browser_gone\` (the
+person closed it; \`stop\` or \`cancel\` the take, then \`open\` again).
+
+Signing in. The capture browser has its own profile and starts signed out.
+Sign in with steps when you were given credentials. Otherwise agree it with
+the person, then \`tellclip browser open <url> --show\` brings the window to
+the front for them, once; the profile remembers.
+
+Limits: one capture browser and one take at a time; one tab (a link that
+opens a new tab is not followed, \`goto\` its URL instead); no steps inside
+cross-origin iframes; native \`<select>\` menus and file pickers are not
+drawn in the window (set the value with \`eval\`); JavaScript alerts and
+confirms are accepted automatically. \`tellclip browser close\` quits it; it
+also closes after 10 idle minutes and when Tellclip quits. For anything the
+steps cannot do, \`open\` prints \`cdp_port\`: an outside CDP driver can attach
+there and stamp its own marks as in the sections below.
+
+## The loop for other windows and outside drivers
+
+Recording a native app, or driving the page with your own tool? Then you are
+the one who knows when things happen, and the rest of this guide up to
+Editing discipline is the contract: stage, rehearse, record in one
+invocation with sleeps, mark every action.
 
 1. Stage the app and rehearse the flow with recording OFF (see Staging).
 2. \`tellclip targets\` \u2014 pick the window (match bundle_id/title, note window_id).
 3. Record the take as ONE chained shell invocation: \`record\`, then
    action+mark pairs separated by explicit sleeps, then \`stop\` (see The take).
 4. Author the cursor track from marks, and add THE one zoom.
-5. \`tellclip suggest\` \u2014 the app detects stretches where nothing on screen
-   moved and returns cut ranges that route around your zooms. Review each
+5. \`tellclip suggest\` \u2014 the app detects idle stretches (no clicks, typing,
+   pointer movement or speech; your authored cursor track counts) and
+   returns cut ranges that route around your zooms. Review each
    against meaning, then apply with \`tellclip cut\` or \`suggest --apply\`.
 6. Author the post-factum transcript from verified marks and frames.
 7. QA the result \u2014 \`tellclip edits\`, \`tellclip transcript list\`,
@@ -595,13 +865,23 @@ one per meaningful hover.
 
 ## Editing discipline
 
-- Zooms first, then dead air: \`tellclip suggest\` finds still stretches from
-  the video itself (the recorder only stores frames when pixels change),
-  pads them so settles stay visible, and carves them around authored zooms
-  so no camera motion ever meets a seam. Animated content (looping videos,
-  spinners) never gets flagged \u2014 visible motion is not dead air, so judge
-  those stretches yourself. \`--min-still <s>\` raises the bar (default 2.0),
-  \`--apply\` cuts everything suggested in one shot.
+- Zooms first, then dead air: \`tellclip suggest\` finds idle stretches \u2014
+  no typing, clicks, scrolling, pointer movement or speech \u2014 pads them so
+  settles stay visible, and carves them around authored zooms so no camera
+  motion ever meets a seam. A CLI take records no real input, so author the
+  cursor track first: its moves and clicks are the activity; without it the
+  whole take reads as idle. The screen is not a signal (a blinking caret
+  changes pixels every second), so a page loading or a spinner while the
+  cursor rests IS suggested \u2014 judge those stretches yourself.
+  \`--min-still <s>\` raises the bar (default 2.0), \`--apply\` cuts
+  everything suggested in one shot.
+- \`tellclip suggest --speed [--apply]\` keeps idle stretches and plays them
+  at 4x instead: 2s or more with no typing, clicks, scrolling, pointer
+  movement or speech, padded like the cuts. The screen may change meanwhile,
+  so use it when the viewer should see that time passed (a build, a page
+  load) without sitting through it. Same detector as the cuts, so author
+  the cursor track (\`tellclip cursor set\`) first. People get the
+  same edit from the app's "Speed up idle stretches" setting.
 - Read every suggestion against MEANING, not stillness. A screen carrying
   something the viewer has to read keeps 1.5-2s after the cut even though
   nothing on it moves \u2014 \`suggest\` will happily reduce your one verification
@@ -641,10 +921,79 @@ one per meaningful hover.
   region coordinates are read off that. The output is the crop's own pixel
   size; zooms, masks, highlights and the cursor follow it. Each side must be
   at least 0.05 of the frame; anything smaller is a zoom's job. To change a
-  crop, \`tellclip crop clear\`, \`frame\`, then \`crop set\` again.
+  crop, read \`tellclip frame <t> --view recording\` (the whole capture) and
+  \`crop set\` again.
+- \`tellclip layout add <start> [<end>] --kind camera|split|screen\` decides
+  what fills the frame for a source-time range of a take that has a webcam:
+  \`camera\` fills the frame with the person, \`split\` ("Split screen" in the
+  app) puts the screen left and the camera right, \`screen\` hides the camera.
+  Outside layout ranges the camera stays in its bubble. Ranges never overlap
+  and are at least 1 s; without \`<end>\` a range is 3 s, trimmed into the
+  free gap. Transitions are automatic (0.4 s) and zooms pause inside camera
+  and split ranges. Your own takes record no camera, so this is for editing
+  a person's recording \u2014 an intro or a sign-off on camera, split for the
+  stretch where they talk the viewer through the screen. \`tellclip edits\`
+  lists the ranges as \`layout_ranges\`.
+- Fix one item instead of clearing a lane: every zoom, mask, highlight and
+  layout row in \`tellclip edits\` has an \`id\`. \`tellclip zoom update <id>\` takes
+  \`--level\`, \`--at x,y\`, \`--mode auto\`, \`--start\` and \`--end\`;
+  \`mask|highlight update <id>\` take \`--rect\`, \`--start\` and \`--end\`;
+  \`layout update <id>\` takes \`--kind\`, \`--start\` and \`--end\`;
+  \`zoom|mask|highlight|layout remove <id>\` drops one. A wrong cut is not final:
+  \`timeline_edit.removed_ranges\` lists what cuts removed, and
+  \`tellclip cut restore <index>\` puts one back at normal speed.
 - Sessions: every response echoes which session was touched. Commands default
   to the latest session; pass --session <id> when working with several takes.
   Only the newest 10 sessions are kept.
+
+## Style \u2014 the editor's inspector as JSON
+
+Everything in the editor's inspector is one object. \`tellclip style get\`
+returns background, padding, corner_radius, shadow, aspect_ratio,
+zoom_effects, cursor {visible, size, smoothing, press_effect, ripple},
+webcam {visible, anchor, frame_type, roundness, size} and audio
+{mic_muted, mic_delay, noise_removed, system_muted} and export {quality,
+frame_rate}, plus \`available\`: the legal background ids, aspect ratios,
+webcam values, export values and number ranges.
+\`webcam\` and \`audio\` are null when the draft has no camera or audio track.
+
+    tellclip style set --json '{"background":"Ink","padding":0.1,"cursor":{"size":1.5}}'
+
+Send only the keys to change (\`--file patch.json\` or stdin work too). The
+edit runs through the editor's own code, so it is exactly a click in the
+inspector: background, padding, aspect ratio and cursor also become the look
+of the person's next recordings. Leave the look alone unless asked to change it.
+
+Presets are saved looks: \`tellclip preset list\` (ids, and which one the
+draft matches), \`preset apply <id>\`, \`preset save <name>\`,
+\`preset delete <id>\`. Custom backgrounds: \`tellclip background add
+--image <path>\` (or \`--color 1F2937\`, \`--gradient 3B82F6,A855F7,135\`) adds
+one and shows it; \`background remove <id>\` drops one. Sharing, saving and
+recording stay CLI commands.
+
+## Coverage \u2014 the CLI and the in-app agent
+
+Everything the editor changes on a draft is a CLI command here and a tool
+of Tellclip's in-app agent, run by the same app code. \`tellclip status\`
+lists the app's edit ops as \`edit_ops\`.
+
+    edits / frame / suggest          get_draft / frame / suggest
+    zoom|mask|highlight|layout add|update|remove|clear
+                                     <lane>_add|_update|_remove|_clear
+    cut / cut restore / speed        cut / cut_restore / speed
+    crop set|clear                   crop_set / crop_clear
+    cursor set|clear                 cursor_set / cursor_clear
+    transcript set|list|clear        transcript_set / get_transcript / transcript_clear
+    transcript cut|pause|tidy        cut_words / edit_pause / tidy_transcript
+    title / summary                  title / summary
+    style get|set                    get_style / set_style
+    preset list|apply|save|delete    list_presets / apply_preset / save_preset / delete_preset
+    background add|remove            add_background / remove_background
+
+CLI only: \`marks\` and the per-lane \`list\` commands (the agent reads
+\`get_draft\`), plus recording, the capture browser (\`browser \u2026\`),
+\`preview\`, \`save\` and \`share\` \u2014 the in-app agent edits a draft; it does
+not record, browse or publish.
 
 ## Transcript \u2014 author it after the edit
 
@@ -670,7 +1019,25 @@ The authored track becomes captions and the uploaded clip's transcript and
 chapter input. CLI takes are silent, so the authored track is THE narration.
 For a session the human recorded in the app with a microphone, the authored
 track overrides the speech-generated transcript without deleting it;
-\`tellclip transcript clear\` restores the generated track.
+\`tellclip transcript clear\` restores the generated track. Without an
+authored track, \`transcript list\` returns the speech transcript's cues with
+\`fallback: "generated"\` and a \`words\` array (each spoken word's \`index\`,
+start and end in source seconds, and \`cut\` when it is out of the clip) and a
+\`pauses\` array (every stretch of 1 s or more with no transcribed speech:
+gaps between words, and silences the audio shows inside a word; \`index\`,
+start, end, \`after_word\`, and \`kept_seconds\` still playing); it
+starts transcription if needed and reports \`fallback: "generating"\` while
+that runs, so call it again.
+
+Cut speech by its words, as Cut in the editor's Transcript tab does:
+\`tellclip transcript cut <from> <to>\` cuts words \`from\`..\`to\` (inclusive
+indices) as one stretch, reaching half-way into the silence around them (at
+most 0.2 s), never into a kept word; add \`--restore\` to put them back.
+\`tellclip transcript pause <index>\` shortens one pause to 0.4 s,
+\`--remove\` leaves 0.1 s, \`--restore\` puts it back; nothing outside the
+pause is cut.
+\`tellclip transcript tidy\` shortens every pause of 1 s or more to 0.4 s and
+cuts filler words (um, uh); \`--no-pauses\` / \`--no-fillers\` skip one. A pause can hold silent on-screen action, so check frames before tidying.
 
 Cuts and speed changes made after \`transcript set\` can remove cues entirely;
 every \`cut\`/\`speed\`/\`edits\` response reports the loss as
@@ -692,11 +1059,21 @@ The edit is not the deliverable; the rendered clip is. Check it:
 - \`tellclip edits\` \u2014 \`edited_duration_seconds\` against your target, and
   \`kept_ranges\`/\`zoom_ranges\` against what you intended to build.
 - \`tellclip frame <t>\` at each mark time \u2014 right page, right state, nothing
-  half-rendered. This extracts the RAW capture, so it verifies content, not
-  the styled render.
-- If you need to check the final framing: \`tellclip save --out demo.mp4\` and
-  pull 2-3 frames out of the file \u2014 zoom crop, cursor visible, no seam
-  landing mid-motion.
+  half-rendered. The default view is the capture (cut to the crop), so it
+  verifies content and is what coordinates are read off.
+- \`tellclip frame <t> --view output\` renders that moment the way the
+  finished clip shows it \u2014 crop, zoom, blur, highlights, layout, background,
+  cursor and camera. Check every zoom, mask and highlight with it before you
+  share.
+- The whole take in one picture: \`tellclip frame --sheet\` returns a contact
+  sheet with a tile per mark (or per time you pass, up to 12), on view output.
+  Use it to check that every step landed; use single frames for detail.
+- Look at several moments in one call: \`tellclip frame 3.8 5.2 9 --view
+  output\` returns one picture per time (2-8), in the order given, each with
+  its source time, clip time (\`edited_t\`) and pixel size; a time cut from the
+  clip comes back \`cut: true\` (no picture on view output). Check a zoom at
+  its start, middle and end this way instead of three calls. Use a single
+  time when you place a rect and want full detail.
 
 ## Sharing
 
@@ -738,7 +1115,8 @@ function emit(object, exitCode) {
 }
 
 // src/spec.ts
-import { readFileSync as readFileSync2 } from "node:fs";
+import { readFileSync as readFileSync3 } from "node:fs";
+import { resolve } from "node:path";
 var valueOptions = /* @__PURE__ */ new Set([
   "--window",
   "--app",
@@ -752,12 +1130,44 @@ var valueOptions = /* @__PURE__ */ new Set([
   "--out",
   "--file",
   "--min-still",
-  "--rect"
+  "--rect",
+  "--json",
+  "--mode",
+  "--start",
+  "--end",
+  "--image",
+  "--color",
+  "--gradient",
+  "--kind",
+  "--view",
+  "--viewport",
+  "--into",
+  "--over",
+  "--to",
+  "--text",
+  "--timeout",
+  "--label",
+  "--hold",
+  "--title",
+  "--summary"
 ]);
 var booleanFlags = /* @__PURE__ */ new Set([
   "--system-audio",
   "--from-marks",
-  "--apply"
+  "--apply",
+  "--speed",
+  "--restore",
+  "--remove",
+  "--no-pauses",
+  "--no-fillers",
+  "--show",
+  "--full",
+  "--off-camera",
+  "--browser",
+  "--no-auto-edit",
+  "--sheet",
+  "--record",
+  "--stop"
 ]);
 function parseArgs(args) {
   const parsed = { positional: [], options: /* @__PURE__ */ new Map(), flags: /* @__PURE__ */ new Set() };
@@ -792,6 +1202,26 @@ function double(text, name) {
     throw new UsageError(`${name} must be a number, got '${text}'.`);
   }
   return value;
+}
+function parseBrowserTarget(text) {
+  if (/^e\d+$/.test(text)) return text;
+  if (/^-?\d+(\.\d+)?,-?\d+(\.\d+)?$/.test(text)) {
+    const [x, y] = text.split(",").map(Number);
+    return { x, y };
+  }
+  const colon = text.indexOf(":");
+  if (colon !== -1 && /^[A-Za-z]+$/.test(text.slice(0, colon))) {
+    return { role: text.slice(0, colon), name: text.slice(colon + 1) };
+  }
+  throw new UsageError("A target is a ref (e12), role:name (button:Create) or x,y (640,300).");
+}
+function browserStepSpec(step, parsed) {
+  const label = parsed.options.get("--label");
+  if (label !== void 0) step.label = label;
+  const hold = parsed.options.get("--hold");
+  if (hold !== void 0) step.hold = double(hold, "--hold");
+  if (parsed.flags.has("--off-camera")) step.off_camera = true;
+  return { method: "POST", path: "/rpc/browser", body: { op: "act", steps: [step] } };
 }
 function splitNonEmpty(text, separator) {
   return text.split(separator).filter((part) => part !== "");
@@ -842,6 +1272,24 @@ function rectObject(text, name) {
     `${name} must be 'x,y,WxH' with normalized 0-1 values (e.g. 0.1,0.2,0.3x0.08), got '${text}'.`
   );
 }
+var layoutKinds = ["camera", "split", "screen"];
+function layoutKind(text) {
+  if (!layoutKinds.includes(text)) {
+    throw new UsageError(`--kind must be one of camera, split, screen, got '${text}'.`);
+  }
+  return text;
+}
+function itemFields(usage, parsed) {
+  if (parsed.positional.length !== 2) {
+    throw new UsageError(`${usage} needs the id from 'tellclip edits': tellclip ${usage} <id>.`);
+  }
+  const fields = { id: parsed.positional[1] };
+  const start = parsed.options.get("--start");
+  if (start !== void 0) fields.start = double(start, "--start");
+  const end = parsed.options.get("--end");
+  if (end !== void 0) fields.end = double(end, "--end");
+  return fields;
+}
 function editSpec(op, parsed, fields = {}) {
   const body = { op };
   const session = parsed.options.get("--session");
@@ -857,14 +1305,18 @@ function makeRequestSpec(command, args) {
     case "status":
       return { method: "GET", path: "/status" };
     case "record": {
-      const body = {
-        system_audio: parsed.flags.has("--system-audio")
-      };
-      const selectors = ["--window", "--app", "--display", "--region"].filter((option) => parsed.options.has(option));
+      const body = {};
+      if (!parsed.flags.has("--browser") || parsed.flags.has("--system-audio")) {
+        body.system_audio = parsed.flags.has("--system-audio");
+      }
+      const selectors = ["--browser", "--window", "--app", "--display", "--region"].filter((option) => parsed.options.has(option) || parsed.flags.has(option));
       if (selectors.length !== 1) {
-        throw new UsageError("record needs exactly one of --window, --app, --display, --region.");
+        throw new UsageError("record needs exactly one of --browser, --window, --app, --display, --region.");
       }
       switch (selectors[0]) {
+        case "--browser":
+          body.browser = true;
+          break;
         case "--window": {
           const value = parsed.options.get("--window");
           if (/^[+-]?\d+$/.test(value)) {
@@ -886,10 +1338,149 @@ function makeRequestSpec(command, args) {
       return { method: "POST", path: "/rpc/record", body };
     }
     case "stop":
+      return {
+        method: "POST",
+        path: "/rpc/stop",
+        body: parsed.flags.has("--no-auto-edit") ? { auto_edit: false } : {}
+      };
     case "cancel":
     case "pause":
     case "resume":
       return { method: "POST", path: `/rpc/${command}`, body: {} };
+    case "browser": {
+      const [subcommand, argument] = parsed.positional;
+      switch (subcommand) {
+        case "open": {
+          if (parsed.positional.length > 2) {
+            throw new UsageError("browser open takes an optional URL: tellclip browser open http://localhost:5173/.");
+          }
+          const body = { op: "open" };
+          if (argument !== void 0) body.url = argument;
+          const viewport = parsed.options.get("--viewport");
+          if (viewport !== void 0) {
+            const size = viewport.split("x");
+            const width = size.length === 2 ? parseDouble(size[0]) : void 0;
+            const height = size.length === 2 ? parseDouble(size[1]) : void 0;
+            if (width === void 0 || height === void 0) {
+              throw new UsageError(`--viewport must be 'WxH' (e.g. 1600x900), got '${viewport}'.`);
+            }
+            body.width = width;
+            body.height = height;
+          }
+          if (parsed.flags.has("--show")) body.show = true;
+          return { method: "POST", path: "/rpc/browser", body };
+        }
+        case "snapshot": {
+          const body = { op: "snapshot" };
+          if (parsed.flags.has("--full")) body.full = true;
+          return { method: "POST", path: "/rpc/browser", body };
+        }
+        case "act": {
+          if (parsed.positional.length !== 1) {
+            throw new UsageError("browser act reads JSON steps from --json, --file or stdin.");
+          }
+          const json = parsed.options.get("--json");
+          const file = parsed.options.get("--file");
+          let text;
+          if (json !== void 0) {
+            text = json;
+          } else if (file !== void 0) {
+            try {
+              text = readFileSync3(file, "utf8");
+            } catch {
+              throw new UsageError(`Could not read browser steps file at ${file}.`, false);
+            }
+          } else {
+            text = readFileSync3(0, "utf8");
+          }
+          let steps;
+          try {
+            steps = JSON.parse(text);
+          } catch {
+            steps = void 0;
+          }
+          if (typeof steps !== "object" || steps === null) {
+            throw new UsageError('Browser steps must be a JSON array or object: [{"click":"e12"}].', false);
+          }
+          if (!Array.isArray(steps)) steps = [steps];
+          const body = { op: "act", steps };
+          if (parsed.flags.has("--record")) body.record = true;
+          if (parsed.flags.has("--stop")) body.stop = true;
+          const title = parsed.options.get("--title");
+          if (title !== void 0) body.title = title;
+          const summary = parsed.options.get("--summary");
+          if (summary !== void 0) body.summary = summary;
+          return { method: "POST", path: "/rpc/browser", body };
+        }
+        case "click":
+        case "hover":
+          if (parsed.positional.length !== 2) {
+            throw new UsageError(`browser ${subcommand} needs a target: tellclip browser ${subcommand} e12.`);
+          }
+          return browserStepSpec({ [subcommand]: parseBrowserTarget(argument) }, parsed);
+        case "type": {
+          if (parsed.positional.length !== 2) {
+            throw new UsageError('browser type needs text: tellclip browser type "Hello".');
+          }
+          const step = { type: argument };
+          const into = parsed.options.get("--into");
+          if (into !== void 0) step.into = parseBrowserTarget(into);
+          return browserStepSpec(step, parsed);
+        }
+        case "press":
+          if (parsed.positional.length !== 2) {
+            throw new UsageError("browser press needs a key: tellclip browser press Enter.");
+          }
+          return browserStepSpec({ press: argument }, parsed);
+        case "scroll": {
+          const to = parsed.options.get("--to");
+          const over = parsed.options.get("--over");
+          if (to !== void 0) {
+            if (parsed.positional.length !== 1 || over !== void 0) {
+              throw new UsageError("browser scroll takes pixels [--over <target>] or --to <target>.");
+            }
+            return browserStepSpec({ scroll: { to: parseBrowserTarget(to) } }, parsed);
+          }
+          if (parsed.positional.length !== 2) {
+            throw new UsageError("browser scroll needs pixels or --to <target>: tellclip browser scroll 450.");
+          }
+          const by = double(argument, "pixels");
+          return browserStepSpec({ scroll: over === void 0 ? by : { by, over: parseBrowserTarget(over) } }, parsed);
+        }
+        case "goto":
+          if (parsed.positional.length !== 2) {
+            throw new UsageError("browser goto needs a URL: tellclip browser goto https://example.com/.");
+          }
+          return browserStepSpec({ goto: argument }, parsed);
+        case "wait": {
+          const text = parsed.options.get("--text");
+          const timeout = parsed.options.get("--timeout");
+          if (text !== void 0) {
+            if (parsed.positional.length !== 1) {
+              throw new UsageError("browser wait takes seconds or --text <text> [--timeout <seconds>].");
+            }
+            const wait = { text };
+            if (timeout !== void 0) wait.timeout = double(timeout, "--timeout");
+            return browserStepSpec({ wait }, parsed);
+          }
+          if (parsed.positional.length !== 2 || timeout !== void 0) {
+            throw new UsageError("browser wait needs seconds or --text <text>: tellclip browser wait 0.5.");
+          }
+          return browserStepSpec({ wait: double(argument, "seconds") }, parsed);
+        }
+        case "eval":
+          if (parsed.positional.length !== 2) {
+            throw new UsageError('browser eval needs JavaScript: tellclip browser eval "document.title".');
+          }
+          return browserStepSpec({ eval: argument }, parsed);
+        case "close":
+          return { method: "POST", path: "/rpc/browser", body: { op: "close" } };
+        default:
+          throw new UsageError(
+            subcommand === void 0 ? "browser needs a subcommand: open, snapshot, act, click, hover, type, press, scroll, goto, wait, eval, or close." : `Unknown browser subcommand '${subcommand}'. Use open, snapshot, act, click, hover, type, press, scroll, goto, wait, eval, or close.`
+          );
+      }
+    }
     case "login":
       return { method: "POST", path: "/rpc/login", body: {} };
     case "logout":
@@ -912,7 +1503,7 @@ function makeRequestSpec(command, args) {
     case "zoom": {
       const subcommand = parsed.positional[0];
       if (subcommand === void 0) {
-        throw new UsageError("zoom needs a subcommand: add, list, or clear.");
+        throw new UsageError("zoom needs a subcommand: add, update, remove, list, or clear.");
       }
       switch (subcommand) {
         case "add": {
@@ -929,6 +1520,18 @@ function makeRequestSpec(command, args) {
           if (at !== void 0) fields.at = pointObject(at, "--at");
           return editSpec("zoom_add", parsed, fields);
         }
+        case "update": {
+          const fields = itemFields("zoom update", parsed);
+          const level = parsed.options.get("--level");
+          if (level !== void 0) fields.level = double(level, "--level");
+          const mode = parsed.options.get("--mode");
+          if (mode !== void 0) fields.mode = mode;
+          const at = parsed.options.get("--at");
+          if (at !== void 0) fields.at = pointObject(at, "--at");
+          return editSpec("zoom_update", parsed, fields);
+        }
+        case "remove":
+          return editSpec("zoom_remove", parsed, itemFields("zoom remove", parsed));
         case "list":
           return editSpec("zoom_list", parsed);
         case "clear":
@@ -941,7 +1544,7 @@ function makeRequestSpec(command, args) {
     case "highlight": {
       const subcommand = parsed.positional[0];
       if (subcommand === void 0) {
-        throw new UsageError(`${command} needs a subcommand: add, list, or clear.`);
+        throw new UsageError(`${command} needs a subcommand: add, update, remove, list, or clear.`);
       }
       switch (subcommand) {
         case "add": {
@@ -960,12 +1563,59 @@ function makeRequestSpec(command, args) {
             rect: rectObject(rect, "--rect")
           });
         }
+        case "update": {
+          const fields = itemFields(`${command} update`, parsed);
+          const rect = parsed.options.get("--rect");
+          if (rect !== void 0) fields.rect = rectObject(rect, "--rect");
+          return editSpec(`${command}_update`, parsed, fields);
+        }
+        case "remove":
+          return editSpec(`${command}_remove`, parsed, itemFields(`${command} remove`, parsed));
         case "list":
           return editSpec(`${command}_list`, parsed);
         case "clear":
           return editSpec(`${command}_clear`, parsed);
         default:
           throw new UsageError(`Unknown ${command} subcommand '${subcommand}'.`);
+      }
+    }
+    case "layout": {
+      const subcommand = parsed.positional[0];
+      if (subcommand === void 0) {
+        throw new UsageError("layout needs a subcommand: add, update, remove, list, or clear.");
+      }
+      switch (subcommand) {
+        case "add": {
+          if (parsed.positional.length < 2 || parsed.positional.length > 3) {
+            throw new UsageError(
+              "layout add needs start seconds, optional end seconds, and --kind: tellclip layout add 3 7 --kind split."
+            );
+          }
+          const kind = parsed.options.get("--kind");
+          if (kind === void 0) {
+            throw new UsageError("layout add needs --kind camera|split|screen.");
+          }
+          const fields = {
+            start: double(parsed.positional[1], "start"),
+            kind: layoutKind(kind)
+          };
+          if (parsed.positional.length === 3) fields.end = double(parsed.positional[2], "end");
+          return editSpec("layout_add", parsed, fields);
+        }
+        case "update": {
+          const fields = itemFields("layout update", parsed);
+          const kind = parsed.options.get("--kind");
+          if (kind !== void 0) fields.kind = layoutKind(kind);
+          return editSpec("layout_update", parsed, fields);
+        }
+        case "remove":
+          return editSpec("layout_remove", parsed, itemFields("layout remove", parsed));
+        case "list":
+          return editSpec("layout_list", parsed);
+        case "clear":
+          return editSpec("layout_clear", parsed);
+        default:
+          throw new UsageError(`Unknown layout subcommand '${subcommand}'.`);
       }
     }
     case "crop": {
@@ -987,6 +1637,13 @@ function makeRequestSpec(command, args) {
       }
     }
     case "cut":
+      if (parsed.positional[0] === "restore") {
+        const index = parsed.positional[1];
+        if (parsed.positional.length !== 2 || !/^\d+$/.test(index)) {
+          throw new UsageError("cut restore needs an index from 'tellclip edits' removed_ranges: tellclip cut restore 0.");
+        }
+        return editSpec("cut_restore", parsed, { index: parseInt(index, 10) });
+      }
       if (parsed.positional.length !== 2) {
         throw new UsageError("cut needs start and end seconds: tellclip cut 12.5 18.2.");
       }
@@ -1016,7 +1673,7 @@ function makeRequestSpec(command, args) {
     case "transcript": {
       const subcommand = parsed.positional[0];
       if (subcommand === void 0) {
-        throw new UsageError("transcript needs a subcommand: set, list, or clear.");
+        throw new UsageError("transcript needs a subcommand: set, list, clear, cut, pause, or tidy.");
       }
       switch (subcommand) {
         case "set": {
@@ -1027,12 +1684,12 @@ function makeRequestSpec(command, args) {
           const file = parsed.options.get("--file");
           if (file !== void 0) {
             try {
-              trackData = readFileSync2(file);
+              trackData = readFileSync3(file);
             } catch {
               throw new UsageError(`Could not read transcript track file at ${file}.`, false);
             }
           } else {
-            trackData = readFileSync2(0);
+            trackData = readFileSync3(0);
           }
           const cues = parseTranscriptTrack(trackData);
           if (cues === void 0) {
@@ -1053,6 +1710,38 @@ function makeRequestSpec(command, args) {
             throw new UsageError("transcript clear takes no positional arguments.");
           }
           return editSpec("transcript_clear", parsed);
+        case "cut": {
+          const [, from, to] = parsed.positional;
+          if (parsed.positional.length !== 3 || !/^\d+$/.test(from) || !/^\d+$/.test(to)) {
+            throw new UsageError(
+              "transcript cut needs the first and last word index from 'tellclip transcript list': tellclip transcript cut 12 18."
+            );
+          }
+          const fields = { from: parseInt(from, 10), to: parseInt(to, 10) };
+          if (parsed.flags.has("--restore")) fields.restore = true;
+          return editSpec("transcript_cut", parsed, fields);
+        }
+        case "pause": {
+          const [, index] = parsed.positional;
+          if (parsed.positional.length !== 2 || !/^\d+$/.test(index)) {
+            throw new UsageError(
+              "transcript pause needs a pause index from 'tellclip transcript list': tellclip transcript pause 2 [--remove|--restore]."
+            );
+          }
+          if (parsed.flags.has("--remove") && parsed.flags.has("--restore")) {
+            throw new UsageError("transcript pause takes --remove or --restore, not both.");
+          }
+          const action = parsed.flags.has("--remove") ? "remove" : parsed.flags.has("--restore") ? "restore" : "shorten";
+          return editSpec("transcript_pause", parsed, { index: parseInt(index, 10), action });
+        }
+        case "tidy":
+          if (parsed.positional.length !== 1) {
+            throw new UsageError("transcript tidy takes no positional arguments.");
+          }
+          return editSpec("transcript_tidy", parsed, {
+            pauses: !parsed.flags.has("--no-pauses"),
+            fillers: !parsed.flags.has("--no-fillers")
+          });
         default:
           throw new UsageError(`Unknown transcript subcommand '${subcommand}'.`);
       }
@@ -1062,6 +1751,7 @@ function makeRequestSpec(command, args) {
       const minStill = parsed.options.get("--min-still");
       if (minStill !== void 0) fields.min_still = double(minStill, "min-still");
       if (parsed.flags.has("--apply")) fields.apply = true;
+      if (parsed.flags.has("--speed")) fields.speed = true;
       return editSpec("suggest", parsed, fields);
     }
     case "edits":
@@ -1069,12 +1759,22 @@ function makeRequestSpec(command, args) {
     case "marks":
       return editSpec("marks", parsed);
     case "frame": {
-      if (parsed.positional.length !== 1) {
-        throw new UsageError("frame needs a time in seconds: tellclip frame 12.4.");
+      const sheet = parsed.flags.has("--sheet");
+      if (parsed.positional.length === 0 && !sheet) {
+        throw new UsageError(
+          "frame needs a time in seconds: tellclip frame 12.4 (or several: tellclip frame 3.8 5.2 9), or --sheet for one picture of the whole take."
+        );
       }
-      const fields = { t: double(parsed.positional[0], "t") };
+      const fields = sheet ? { sheet: true, ...parsed.positional.length ? { times: parsed.positional.map((value) => double(value, "times")) } : {} } : parsed.positional.length === 1 ? { t: double(parsed.positional[0], "t") } : { times: parsed.positional.map((value) => double(value, "times")) };
       const out = parsed.options.get("--out");
       if (out !== void 0) fields.out = out;
+      const view = parsed.options.get("--view");
+      if (view !== void 0) {
+        if (!["edit", "recording", "output"].includes(view)) {
+          throw new UsageError("--view is edit, recording or output.");
+        }
+        fields.view = view;
+      }
       return editSpec("frame", parsed, fields);
     }
     case "cursor": {
@@ -1091,12 +1791,12 @@ function makeRequestSpec(command, args) {
           const file = parsed.options.get("--file");
           if (file !== void 0) {
             try {
-              trackData = readFileSync2(file);
+              trackData = readFileSync3(file);
             } catch {
               throw new UsageError(`Could not read cursor track file at ${file}.`, false);
             }
           } else {
-            trackData = readFileSync2(0);
+            trackData = readFileSync3(0);
           }
           const points = parseCursorTrack(trackData);
           if (points === void 0) {
@@ -1112,6 +1812,86 @@ function makeRequestSpec(command, args) {
         default:
           throw new UsageError(`Unknown cursor subcommand '${subcommand}'.`);
       }
+    }
+    case "style": {
+      const subcommand = parsed.positional[0];
+      switch (subcommand) {
+        case "get":
+          return editSpec("style_get", parsed);
+        case "set": {
+          const json = parsed.options.get("--json");
+          const file = parsed.options.get("--file");
+          let text;
+          if (json !== void 0) {
+            text = json;
+          } else if (file !== void 0) {
+            try {
+              text = readFileSync3(file, "utf8");
+            } catch {
+              throw new UsageError(`Could not read style patch file at ${file}.`, false);
+            }
+          } else {
+            text = readFileSync3(0, "utf8");
+          }
+          const patch = parseJSONObject(text);
+          if (patch === void 0) {
+            throw new UsageError(
+              'Style patch must be a JSON object: {"padding":0.1,"cursor":{"size":1.5}}.',
+              false
+            );
+          }
+          return editSpec("style_set", parsed, patch);
+        }
+        default:
+          throw new UsageError("style needs a subcommand: get or set.");
+      }
+    }
+    case "preset": {
+      const [subcommand, argument] = parsed.positional;
+      switch (subcommand) {
+        case "list":
+          return editSpec("preset_list", parsed);
+        case "save":
+        case "apply":
+        case "delete":
+          if (parsed.positional.length !== 2) {
+            throw new UsageError(
+              subcommand === "save" ? 'preset save needs a name: tellclip preset save "Launch look".' : `preset ${subcommand} needs an id from 'tellclip preset list'.`
+            );
+          }
+          return editSpec(`preset_${subcommand}`, parsed, subcommand === "save" ? { name: argument } : { id: argument });
+        default:
+          throw new UsageError("preset needs a subcommand: list, apply, save, or delete.");
+      }
+    }
+    case "background": {
+      const subcommand = parsed.positional[0];
+      if (subcommand === "remove") {
+        if (parsed.positional.length !== 2) {
+          throw new UsageError("background remove needs an id from 'tellclip style get' available.custom_backgrounds.");
+        }
+        return editSpec("background_remove", parsed, { id: parsed.positional[1] });
+      }
+      if (subcommand !== "add") {
+        throw new UsageError("background needs a subcommand: add or remove.");
+      }
+      const image = parsed.options.get("--image");
+      const color = parsed.options.get("--color");
+      const gradient = parsed.options.get("--gradient");
+      if ([image, color, gradient].filter((value) => value !== void 0).length !== 1) {
+        throw new UsageError("background add needs exactly one of --image, --color, --gradient.");
+      }
+      if (image !== void 0) {
+        return editSpec("background_add", parsed, { image: resolve(image) });
+      }
+      if (color !== void 0) return editSpec("background_add", parsed, { color });
+      const parts = splitNonEmpty(gradient, ",");
+      if (parts.length < 2 || parts.length > 3) {
+        throw new UsageError("--gradient must be 'from,to[,angle]', e.g. 3B82F6,A855F7,135.");
+      }
+      const fields = { from: parts[0], to: parts[1] };
+      if (parts.length === 3) fields.angle = double(parts[2], "angle");
+      return editSpec("background_add", parsed, { gradient: fields });
     }
     case "preview": {
       const body = {};
@@ -1167,170 +1947,474 @@ function parseTranscriptTrack(data) {
   );
   return objects ? cues : void 0;
 }
+function parseJSONObject(text) {
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return void 0;
+  }
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
+}
 
-// src/transport.ts
-import { spawnSync as spawnSync2 } from "node:child_process";
-import { readFileSync as readFileSync3 } from "node:fs";
-import http2 from "node:http";
-import { homedir as homedir2 } from "node:os";
-import { join } from "node:path";
-var updateNext = "In Claude Code run `claude plugin update tellclip@tellclip` and restart the session; otherwise `npm i -g tellclip@latest`.";
-function discoveryFilePath() {
-  return join(homedir2(), "Library", "Application Support", "TellClip", "cli.json");
-}
-function readDiscoveryFile() {
-  try {
-    const object = JSON.parse(readFileSync3(discoveryFilePath(), "utf8"));
-    const { port, token } = object ?? {};
-    if (Number.isInteger(port) && typeof token === "string") {
-      return { port, token };
-    }
-  } catch {
+// src/setup.ts
+import { spawnSync as spawnSync3 } from "node:child_process";
+import { appendFile, readFile, writeFile } from "node:fs/promises";
+import { join as join3 } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+
+// src/setup-install.ts
+import { execFile } from "node:child_process";
+import { constants } from "node:fs";
+import { access, copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { homedir as homedir3, tmpdir } from "node:os";
+import { join as join2 } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+var exec = promisify(execFile);
+var runSetupCommand = async (command, args) => {
+  await exec(command, args, { timeout: 6e5 });
+};
+async function downloadDmg(source, destination, run2) {
+  if (source.startsWith("file://")) {
+    await copyFile(fileURLToPath(source), destination);
+  } else if (!/^[a-z][a-z\d+.-]*:/i.test(source)) {
+    await copyFile(source, destination);
+  } else {
+    if (!/^https?:\/\//i.test(source)) throw new Error("The setup DMG URL must use HTTP, HTTPS, file://, or a local path.");
+    await run2("/usr/bin/curl", ["--fail", "--location", "--silent", "--show-error", "--max-time", "600", "--output", destination, "--url", source]);
   }
-  return void 0;
 }
-function send(spec, endpoint, timeoutMs, version = cliVersion) {
-  return new Promise((resolve) => {
-    const payload = spec.method === "POST" ? JSON.stringify(spec.body ?? {}) : void 0;
-    const headers = {
-      authorization: `Bearer ${endpoint.token}`,
-      "x-tellclip-cli-version": version
-    };
-    if (payload !== void 0) {
-      headers["content-type"] = "application/json";
-      headers["content-length"] = Buffer.byteLength(payload);
+async function setupAppDirectory(override, home = homedir3(), writable = async (path3) => {
+  try {
+    await access(path3, constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}) {
+  return override ?? (await writable("/Applications") ? "/Applications" : join2(home, "Applications"));
+}
+async function installSetupApp(source, directory, deps = {}) {
+  const run2 = deps.run ?? runSetupCommand;
+  const temporary = await mkdtemp(join2(deps.tempRoot ?? tmpdir(), "tellclip-setup-"));
+  const dmg = join2(temporary, "TellClip.dmg");
+  const mount = join2(temporary, "mount");
+  const app = join2(directory, "TellClip.app");
+  let mounted = false;
+  try {
+    await mkdir(mount);
+    await (deps.download ?? downloadDmg)(source, dmg, run2);
+    await run2("/usr/bin/hdiutil", ["attach", dmg, "-nobrowse", "-readonly", "-mountpoint", mount]);
+    mounted = true;
+    try {
+      await mkdir(directory, { recursive: true });
+      await run2("/usr/bin/ditto", [join2(mount, "TellClip.app"), app]);
+    } finally {
+      await run2("/usr/bin/hdiutil", ["detach", mount]);
+      mounted = false;
     }
-    const request = http2.request(
-      { host: "127.0.0.1", port: endpoint.port, path: spec.path, method: spec.method, headers },
-      (response) => {
-        const chunks = [];
-        response.on("data", (chunk) => chunks.push(chunk));
-        response.on(
-          "end",
-          () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks) })
-        );
-        response.on("error", () => resolve(void 0));
+    return app;
+  } finally {
+    await rm(dmg, { force: true });
+    if (!mounted) await rm(temporary, { recursive: true, force: true });
+  }
+}
+
+// src/setup.ts
+var permissionNext = "Enable Tellclip under System Settings > Privacy & Security > Screen Recording, then run 'tellclip setup' again.";
+var restartAdvice = "If you already enabled it, restart Tellclip to apply the grant, then run 'tellclip setup' again.";
+var sharingNext = "Sharing needs a sign-in: run 'tellclip login' when you want a link.";
+var readyNext = "Read the file at skill_path now and follow it: Tellclip is ready in this session without a restart. Then ask the person what they want recorded.";
+var appLaunchWaitMs = 15e3;
+var appLaunchPollMs = 250;
+var personPollMs = 2e3;
+function parseSetupArgs(args) {
+  const flags = /* @__PURE__ */ new Set();
+  let waitMs = 12e4;
+  for (let i = 0; i < args.length; i++) {
+    const argument = args[i];
+    if (["--dry-run", "--no-test", "--no-login", "--project"].includes(argument)) {
+      flags.add(argument);
+    } else if (argument === "--wait") {
+      const seconds = args[++i];
+      if (seconds === void 0 || !/^\d+(\.\d+)?$/.test(seconds) || !Number.isFinite(Number(seconds) * 1e3)) {
+        throw new UsageError("--wait needs a non-negative number of seconds.");
       }
-    );
-    request.setTimeout(timeoutMs, () => request.destroy());
-    request.on("error", () => resolve(void 0));
-    if (payload !== void 0) request.write(payload);
-    request.end();
-  });
-}
-async function probe(endpoint, version = cliVersion) {
-  const response = await send({ method: "GET", path: "/status" }, endpoint, 2e3, version);
-  if (response === void 0) return void 0;
-  let status = {};
-  try {
-    const parsed = JSON.parse(response.body.toString("utf8"));
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-      status = parsed;
+      waitMs = Number(seconds) * 1e3;
+    } else {
+      throw new UsageError(`Unknown setup argument ${argument}.`);
     }
+  }
+  return {
+    dryRun: flags.has("--dry-run"),
+    noTest: flags.has("--no-test"),
+    noLogin: flags.has("--no-login"),
+    project: flags.has("--project"),
+    waitMs
+  };
+}
+function setupSystem() {
+  const read = (command, args) => spawnSync3(command, args, { encoding: "utf8" }).stdout?.trim() ?? "";
+  if (process.platform !== "darwin") return { platform: process.platform, arch: process.arch, macos: "" };
+  const arch = process.arch === "arm64" || read("/usr/sbin/sysctl", ["-n", "hw.optional.arm64"]) === "1" ? "arm64" : process.arch;
+  return { platform: process.platform, arch, macos: read("/usr/bin/sw_vers", ["-productVersion"]) };
+}
+async function findRunningApp() {
+  const endpoint = readDiscoveryFile();
+  return endpoint && await probe(endpoint) ? endpoint : void 0;
+}
+async function setupClient(spec, endpoint, timeoutMs) {
+  const response = await send(spec, endpoint, timeoutMs);
+  if (!response) throw cliError("app_unreachable", "Tellclip stopped responding.", "Open Tellclip and run 'tellclip setup' again.", 1);
+  let result;
+  try {
+    result = JSON.parse(response.body.toString("utf8"));
   } catch {
   }
-  if (typeof status.min_cli_version === "string" && isVersionOlder(version, status.min_cli_version)) {
-    throw cliError(
-      "cli_outdated",
-      `tellclip ${version} is older than the minimum supported version ${status.min_cli_version}.`,
-      updateNext,
-      1
-    );
-  }
-  if (typeof status.bundled_cli_version === "string" && isVersionOlder(version, status.bundled_cli_version)) {
-    process.stderr.write(
-      `tellclip ${version} is behind the version shipped with this Tellclip (${status.bundled_cli_version}). ${updateNext}
-`
-    );
-  }
-  if (typeof status.app_update_available === "string") {
-    process.stderr.write(`A Tellclip app update is available (${status.app_update_available})
-`);
-  }
-  return status;
+  const code = result?.error?.code;
+  if (response.status === 404 && (code === void 0 || code === "http_404")) throw outdatedApp();
+  if (typeof result !== "object" || result === null || Array.isArray(result)) throw new Error("Tellclip returned a non-JSON setup response.");
+  const payload = result;
+  if (response.status >= 400 && payload.error === void 0) throw new Error(`Tellclip setup returned HTTP ${response.status}.`);
+  return payload;
 }
-function launchApp() {
-  const appPath = process.env.TELLCLIP_APP;
-  const args = appPath ? ["-g", "-j", appPath] : ["-g", "-j", "-b", "com.withmjp.tellclip"];
-  const result = spawnSync2("/usr/bin/open", args, { stdio: "ignore" });
-  return result.status === 0;
+function outdatedApp() {
+  return cliError("app_outdated", "This Tellclip app is too old for setup.", "Update Tellclip, then run 'tellclip setup' again.", 1);
 }
-var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function connectOrLaunch() {
-  const known = readDiscoveryFile();
-  if (known && await probe(known)) return known;
-  if (!launchApp()) {
-    throw cliError(
-      "app_unreachable",
-      "The Tellclip app is not installed, so the CLI has nothing to control.",
-      "Install Tellclip from https://tellclip.com and open it once, then retry. For a non-standard location, set TELLCLIP_APP=/path/to/TellClip.app.",
-      3
-    );
+function unwrap(result) {
+  if (result.error !== void 0) {
+    const error = result.error;
+    if (["not_found", "route_not_found", "unknown_route", "unknown_path"].includes(String(error.code))) throw outdatedApp();
+    throw new EmitAndExit(result, 1);
   }
-  const deadline = Date.now() + 15e3;
-  while (Date.now() < deadline) {
-    await sleep(250);
-    const endpoint = readDiscoveryFile();
-    if (endpoint && await probe(endpoint)) return endpoint;
+  return result;
+}
+function setupStatus(result) {
+  if (typeof result.app_version !== "string" || typeof result.signed_in !== "boolean" || !["authorized", "denied", "not_determined"].includes(String(result.screen_recording)) || !Array.isArray(result.agents) || typeof result.skill_path !== "string" || typeof result.browser?.found !== "boolean") {
+    throw new Error("Tellclip returned an incomplete setup status.");
   }
-  throw cliError(
-    "app_unreachable",
-    "Tellclip is not responding on its control port.",
-    "Quit Tellclip if it is running, reopen it, then retry. The app must be running for the CLI to work.",
-    3
-  );
+  return result;
+}
+function failure(error) {
+  if (error instanceof EmitAndExit) {
+    const value = error.payload.error;
+    return { detail: String(value.message), next: typeof value.next === "string" ? value.next : "Check Tellclip and run 'tellclip setup' again." };
+  }
+  return { detail: error instanceof Error ? error.message : String(error), next: "Resolve this setup error, then run 'tellclip setup' again." };
+}
+var joinNames = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+function agentsDetail(agents) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const agent of agents.filter((agent2) => agent2.detected)) {
+    const kind = agent.installed === "none" ? agent.id === "claude_code" ? "plugin" : "skill" : agent.installed;
+    groups.set(kind, [...groups.get(kind) ?? [], agent.name]);
+  }
+  return [...groups].map(([kind, names]) => `${joinNames(names)} (${kind})`).join(", ");
+}
+var projectMarker = "## Clips of your work (Tellclip)";
+var projectBlock = `${projectMarker}
+
+After a change a person can see in the running product, record a short clip of it with the tellclip-demo skill and put the share link in your final message (and in the pull request, when there is one). Skip it for changes with nothing to watch.
+`;
+async function projectContent(path3) {
+  try {
+    return await readFile(path3, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return void 0;
+    throw error;
+  }
+}
+async function configureProject(directory, dryRun) {
+  let name = "AGENTS.md";
+  let content = await projectContent(join3(directory, name));
+  if (content === void 0) {
+    const claude = await projectContent(join3(directory, "CLAUDE.md"));
+    if (claude !== void 0) {
+      name = "CLAUDE.md";
+      content = claude;
+    }
+  }
+  if (content?.split(/\r?\n/).includes(projectMarker)) return { step: "project", ok: true, detail: `${name} already has the Tellclip instructions.` };
+  if (!dryRun) {
+    const block = `${content ? content.endsWith("\n\n") ? "" : content.endsWith("\n") ? "\n" : "\n\n" : ""}${projectBlock}`;
+    if (content === void 0) await writeFile(join3(directory, name), block, { flag: "wx" });
+    else await appendFile(join3(directory, name), block);
+  }
+  return { step: "project", ok: true, detail: `${dryRun ? "Would add" : "Added"} Tellclip instructions to ${name}.` };
+}
+async function setup(args, deps = {}) {
+  const options = parseSetupArgs(args);
+  const now = deps.now ?? Date.now;
+  const sleep2 = deps.sleep ?? delay;
+  const interval = deps.pollIntervalMs ?? personPollMs;
+  const findApp = deps.findApp ?? findRunningApp;
+  const client = deps.client ?? setupClient;
+  const steps = [];
+  const recovery = [];
+  let endpoint;
+  let status;
+  const call = async (op) => unwrap(await client({ method: "POST", path: "/rpc/setup", body: { op } }, endpoint, op === "test_take" ? 12e4 : 5e3));
+  const refresh = async () => status = setupStatus(await call("status"));
+  const waitFor = async (ready, deadline, pollMs = interval, refreshStatus = refresh) => {
+    while (!ready() && now() < deadline) {
+      await sleep2(Math.min(pollMs, deadline - now()));
+      await refreshStatus();
+    }
+  };
+  try {
+    const system = (deps.system ?? setupSystem)();
+    if (system.platform !== "darwin" || system.arch !== "arm64" || !(Number.parseInt(system.macos, 10) >= 15)) {
+      throw cliError("unsupported_platform", "Tellclip setup requires macOS 15 or later on an Apple silicon (arm64) Mac.", "Use a Mac with Apple silicon and macOS 15 or later, then run 'tellclip setup' again.", 1);
+    }
+    endpoint = await findApp();
+    let detail = "Tellclip is running and its control server is ready.";
+    if (!endpoint && !options.dryRun) {
+      if ((deps.launch ?? launchApp)()) {
+        await waitFor(() => endpoint !== void 0, now() + appLaunchWaitMs, deps.pollIntervalMs ?? appLaunchPollMs, async () => {
+          endpoint = await findApp();
+        });
+        if (!endpoint) throw cliError("app_unreachable", "Tellclip launched but its control server did not respond.", "Open Tellclip and run 'tellclip setup' again.", 1);
+        detail = "Launched Tellclip and connected to its control server.";
+      } else {
+        const app = await (deps.install ?? (async () => installSetupApp(
+          process.env.TELLCLIP_SETUP_DMG_URL ?? "https://downloads.tellclip.com/beta/TellClip-latest.dmg",
+          await setupAppDirectory(process.env.TELLCLIP_SETUP_APP_DIR)
+        )))();
+        await (deps.launchInstalled ?? ((path3) => runSetupCommand("/usr/bin/open", ["-g", "-j", path3])))(app);
+        await waitFor(() => endpoint !== void 0, now() + appLaunchWaitMs, deps.pollIntervalMs ?? appLaunchPollMs, async () => {
+          endpoint = await findApp();
+        });
+        if (!endpoint) throw cliError("app_unreachable", "Installed Tellclip, but its control server did not respond.", "Open Tellclip and run 'tellclip setup' again.", 1);
+        detail = "Installed Tellclip and connected to its control server.";
+      }
+    }
+    if (endpoint) await refresh();
+    else detail = "Would launch Tellclip, or download and install it if it is missing.";
+    steps.push({ step: "app", ok: true, detail });
+  } catch (error) {
+    const failed = failure(error);
+    steps.push({ step: "app", ok: false, detail: failed.detail, needs_person: true });
+    recovery.push(failed.next);
+  }
+  if (status) {
+    try {
+      if (!options.dryRun) status = setupStatus(await call("install_agents"));
+      const names = agentsDetail(status.agents);
+      const errors = status.errors ?? [];
+      let detail = names ? `${options.dryRun ? "Would install or update" : "Installed"} ${names}.` : "No detected agents; the CLI works from any shell.";
+      if (errors.length) detail += ` ${errors.map((error) => `${error.agent}: ${error.message}`).join("; ")}`;
+      steps.push({ step: "agents", ok: errors.length === 0, detail });
+      if (errors.length) recovery.push("Resolve the agent installation errors and run 'tellclip setup' again.");
+    } catch (error) {
+      const failed = failure(error);
+      steps.push({ step: "agents", ok: false, detail: failed.detail });
+      recovery.push(failed.next);
+    }
+    try {
+      if (status.screen_recording !== "authorized" && !options.dryRun) {
+        status = setupStatus(await call("request_permission"));
+        await waitFor(() => status.screen_recording === "authorized", now() + options.waitMs);
+      }
+      const authorized = status.screen_recording === "authorized";
+      const permission2 = {
+        step: "permission",
+        ok: authorized || options.dryRun,
+        detail: authorized ? "Screen Recording is authorized." : options.dryRun ? "Would open System Settings and wait for Screen Recording permission." : `${permissionNext} ${restartAdvice}`
+      };
+      if (!permission2.ok) {
+        permission2.needs_person = true;
+        recovery.push(permission2.detail);
+      }
+      steps.push(permission2);
+    } catch (error) {
+      const failed = failure(error);
+      steps.push({ step: "permission", ok: false, detail: failed.detail, needs_person: true });
+      recovery.push(failed.next);
+    }
+    if (status.signed_in || options.noLogin || options.dryRun) {
+      steps.push({
+        step: "sign_in",
+        ok: true,
+        detail: status.signed_in ? "Already signed in to Tellclip." : options.noLogin ? "Skipped sign-in (--no-login); sharing needs a sign-in." : "Would open the browser and wait for Tellclip sign-in."
+      });
+    } else {
+      const abort = new AbortController();
+      let loginError;
+      try {
+        const deadline = now() + options.waitMs;
+        const login = (deps.login ?? loginWithApp)(endpoint, Math.max(1, options.waitMs), abort.signal).catch((error) => {
+          loginError = error;
+        });
+        await refresh();
+        await waitFor(() => status.signed_in || loginError !== void 0, deadline);
+        abort.abort();
+        await login;
+        steps.push({
+          step: "sign_in",
+          ok: status.signed_in,
+          detail: status.signed_in ? "Signed in to Tellclip." : loginError ? failure(loginError).detail : "Sign-in did not finish before the setup wait ended.",
+          ...!status.signed_in ? { needs_person: true } : {}
+        });
+      } catch (error) {
+        steps.push({ step: "sign_in", ok: false, detail: failure(error).detail, needs_person: true });
+      } finally {
+        abort.abort();
+      }
+    }
+    const permission = steps.find((step) => step.step === "permission");
+    if (permission.ok && status.screen_recording !== "authorized" && !options.dryRun) {
+      permission.ok = false;
+      permission.detail = `${permissionNext} ${restartAdvice}`;
+      permission.needs_person = true;
+      recovery.push(permission.detail);
+    }
+    if (options.noTest || status.screen_recording !== "authorized" || !permission.ok || options.dryRun) {
+      steps.push({
+        step: "test",
+        ok: options.noTest || options.dryRun || permission.ok,
+        detail: options.noTest ? "Skipped the test clip (--no-test)." : options.dryRun ? "Would record and discard a short test clip after permission is authorized." : "Skipped the test clip until Screen Recording is authorized."
+      });
+    } else {
+      try {
+        const take = await call("test_take");
+        const sheet = take.sheet;
+        if (take.ok !== true || typeof take.clip_seconds !== "number" || !Number.isFinite(take.clip_seconds) || typeof sheet?.path !== "string") throw new Error("Tellclip returned an incomplete test clip response.");
+        steps.push({ step: "test", ok: true, detail: `Recorded a ${take.clip_seconds.toFixed(1)} s test clip.`, sheet: sheet.path });
+      } catch (error) {
+        const failed = failure(error);
+        steps.push({ step: "test", ok: false, detail: failed.detail });
+        recovery.push(failed.next);
+      }
+    }
+  } else {
+    const pending = {
+      agents: "install integrations for detected agents",
+      permission: "request Screen Recording permission if needed",
+      sign_in: options.noLogin ? "skip sign-in (--no-login)" : "sign in if needed",
+      test: options.noTest ? "skip the test clip (--no-test)" : "record and discard a test clip"
+    };
+    for (const step of ["agents", "permission", "sign_in", "test"]) {
+      const planned = options.dryRun && steps[0].ok;
+      steps.push({
+        step,
+        ok: planned,
+        detail: planned ? `Would ${pending[step]} once Tellclip is running.` : "Blocked until the app setup succeeds."
+      });
+    }
+  }
+  if (options.project) {
+    try {
+      steps.push(await configureProject(deps.cwd ?? process.cwd(), options.dryRun));
+    } catch (error) {
+      steps.push({ step: "project", ok: false, detail: failure(error).detail });
+      recovery.push("Make the project instructions file writable, then run 'tellclip setup --project' again.");
+    }
+  }
+  const ok = steps.every((step) => !["app", "permission", "test"].includes(step.step) || step.ok);
+  let next = !ok ? recovery.join(" ") : options.dryRun ? "Dry run only: run 'tellclip setup' without --dry-run to apply these steps." : readyNext;
+  if (ok && !options.dryRun) {
+    if (steps.some((step) => step.sheet)) next += " Show them the test clip's picture at steps[test].sheet.";
+    if (!status?.signed_in) next += ` ${sharingNext}`;
+    if (recovery.length) next += ` ${recovery.join(" ")}`;
+  }
+  if (!ok && !/tellclip setup/.test(next)) next += " Then run 'tellclip setup' again.";
+  return { ok, steps, ...status ? { skill_path: status.skill_path } : {}, next };
 }
 
 // src/usage.ts
 var usageText = `tellclip \u2014 record, edit, and share Tellclip clips from the command line.
 
 USAGE
+  tellclip setup [--dry-run] [--no-test] [--no-login] [--project] [--wait <seconds>]
   tellclip --version
   tellclip upload <file.mp4> [--title <title>] [--transcript <cues.json|file.vtt>]
                   [--chapters <chapters.json>] [--summary <text>]
                   [--thumbnail <seconds>]
   tellclip targets
-  tellclip record (--window <id|title> | --app <name|bundle-id> | --display <id|main> | --region <x,y,WxH>)
+  tellclip record (--browser | --window <id|title> | --app <name|bundle-id>
+                  | --display <id|main> | --region <x,y,WxH>)
                   [--system-audio]
   tellclip status
   tellclip pause | resume
   tellclip mark <label> [--at <x,y>] [--t <seconds> | --epoch-ms <ms>] [--session <s>]
-  tellclip stop
+  tellclip stop [--no-auto-edit]
   tellclip cancel
+  tellclip browser open [<url>] [--viewport <W>x<H>] [--show]
+  tellclip browser snapshot [--full]
+  tellclip browser act [--json <steps> | --file <path>] [--record] [--stop] [--title <text>] [--summary <text>]  # or steps JSON on stdin; --record --stop is a whole take in one call; a step's "zoom": 2 is the clip's one zoom
+  tellclip browser click <target>
+  tellclip browser hover <target>
+  tellclip browser type <text> [--into <target>]
+  tellclip browser press <key>
+  tellclip browser scroll <pixels> [--over <target>]
+  tellclip browser scroll --to <target>
+  tellclip browser goto <url>
+  tellclip browser wait <seconds>
+  tellclip browser wait --text <text> [--timeout <seconds>]
+  tellclip browser eval <javascript>
+  tellclip browser close
   tellclip zoom add <start> <end> [--level <1-5>] [--at <x,y>] [--session <s>]
-  tellclip zoom list | zoom clear [--session <s>]
+  tellclip zoom update <id> [--level <1-5>] [--at <x,y>] [--mode auto|manual]
+                  [--start <s>] [--end <s>] [--session <s>]
+  tellclip zoom remove <id> | zoom list | zoom clear [--session <s>]
   tellclip mask add <start> <end> --rect <x,y,WxH> [--session <s>]
-  tellclip mask list | mask clear [--session <s>]
+  tellclip mask update <id> [--rect <x,y,WxH>] [--start <s>] [--end <s>] [--session <s>]
+  tellclip mask remove <id> | mask list | mask clear [--session <s>]
   tellclip highlight add <start> <end> --rect <x,y,WxH> [--session <s>]
-  tellclip highlight list | highlight clear [--session <s>]
+  tellclip highlight update <id> [--rect <x,y,WxH>] [--start <s>] [--end <s>] [--session <s>]
+  tellclip highlight remove <id> | highlight list | highlight clear [--session <s>]
+  tellclip layout add <start> [<end>] --kind camera|split|screen [--session <s>]
+  tellclip layout update <id> [--kind camera|split|screen] [--start <s>] [--end <s>] [--session <s>]
+  tellclip layout remove <id> | layout list | layout clear [--session <s>]
   tellclip crop set <x,y,WxH> | crop clear [--session <s>]
-  tellclip suggest [--min-still <seconds>] [--apply] [--session <s>]
+  tellclip suggest [--min-still <seconds>] [--speed] [--apply] [--session <s>]
   tellclip cut <start> <end> [--session <s>]
+  tellclip cut restore <index> [--session <s>]
   tellclip speed <start> <end> <rate> [--session <s>]
   tellclip title <text> [--session <s>]
   tellclip summary <text> [--session <s>]
   tellclip transcript set [--file <path>] [--session <s>]
   tellclip transcript list [--session <s>]
   tellclip transcript clear [--session <s>]
+  tellclip transcript cut <from> <to> [--restore] [--session <s>]
+  tellclip transcript pause <index> [--remove|--restore] [--session <s>]
+  tellclip transcript tidy [--no-pauses] [--no-fillers] [--session <s>]
   tellclip edits | marks [--session <s>]
-  tellclip frame <seconds> [--out <path>] [--session <s>]
+  tellclip frame <seconds> [<seconds>...] [--view edit|recording|output] [--out <path|dir>] [--session <s>]
+  tellclip frame --sheet [<seconds>...] [--view ...]   one picture: a tile per mark, or per time
   tellclip cursor set [--file <path>] [--from-marks] [--session <s>]
   tellclip cursor clear [--session <s>]
+  tellclip style get [--session <s>]
+  tellclip style set (--json <patch> | --file <path>) [--session <s>]
+  tellclip preset list | preset apply <id> | preset save <name> | preset delete <id> [--session <s>]
+  tellclip background add (--image <path> | --color <hex> | --gradient <from,to[,angle]>) [--session <s>]
+  tellclip background remove <id> [--session <s>]
   tellclip preview [--session <s>]
   tellclip save [--out <path>] [--session <s>]
   tellclip share [--session <s>]
   tellclip login | logout
   tellclip guide
 
+Start a new Mac with \`tellclip setup\`: connect to or install Tellclip, install
+agent integrations, request Screen Recording permission, sign in, and test a clip.
+--dry-run reports the steps without changes; --no-test and --no-login skip them.
+--project adds clip instructions to AGENTS.md (or an existing CLAUDE.md).
+--wait sets the permission and sign-in wait in seconds (default 120).
+
+Browser single-step commands accept --label <text>, --hold <seconds>,
+and --off-camera. Targets are refs (e12), role:name (button:Create), or
+x,y (640,300) in viewport CSS pixels.
+
 All output is JSON. Edit and transcript cue times are seconds in the source
-recording; coordinates are normalized 0-1 from the top-left of the captured
+recording; edit coordinates are normalized 0-1 from the top-left of the captured
 window. Run \`tellclip guide\` for the full agent workflow.`;
 
 // src/upload.ts
-import { execFile } from "node:child_process";
-import { open, readFile } from "node:fs/promises";
+import { execFile as execFile2 } from "node:child_process";
+import { open, readFile as readFile2 } from "node:fs/promises";
 import path2 from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { setTimeout as delay2 } from "node:timers/promises";
 
 // src/authored-content.ts
 var maxTranscriptBytes = 2 * 1024 * 1024;
@@ -1450,7 +2534,7 @@ function parseSummaryInput(source) {
 }
 
 // src/upload.ts
-var maxUploadBytes = 1e9;
+var maxUploadBytes = 5e9;
 var uploadUsage = "Usage: tellclip upload <file.mp4> [--title <title>] [--transcript <cues.json|file.vtt>] [--chapters <chapters.json>] [--summary <text>] [--thumbnail <seconds>]";
 var valueFlags = [
   "--title",
@@ -1473,21 +2557,21 @@ function parseUploadArgs(args) {
   const title = (values["--title"] ?? path2.basename(file, path2.extname(file))).trim();
   if (!title || title.length > 200)
     throw new UsageError("Title must contain 1\u2013200 characters.");
-  const resolve = (value) => value === void 0 ? void 0 : path2.resolve(value);
+  const resolve2 = (value) => value === void 0 ? void 0 : path2.resolve(value);
   const thumbnail = values["--thumbnail"] === void 0 ? void 0 : Number(values["--thumbnail"]);
   if (thumbnail !== void 0 && (values["--thumbnail"].trim() === "" || !Number.isFinite(thumbnail) || thumbnail < 0))
     throw new UsageError("--thumbnail needs a time in seconds, e.g. 4.5.");
   return {
     file: path2.resolve(file),
     title,
-    transcript: resolve(values["--transcript"]),
-    chapters: resolve(values["--chapters"]),
+    transcript: resolve2(values["--transcript"]),
+    chapters: resolve2(values["--chapters"]),
     summary: values["--summary"] === void 0 ? void 0 : parseSummaryInput(values["--summary"]),
     thumbnail
   };
 }
 async function readAuthoredFile(file) {
-  return readFile(file, "utf8").catch(() => {
+  return readFile2(file, "utf8").catch(() => {
     throw cliError(
       "file_unreadable",
       `Could not read ${file}.`,
@@ -1497,8 +2581,8 @@ async function readAuthoredFile(file) {
   });
 }
 async function probeUpload(file) {
-  const data = await new Promise((resolve, reject) => {
-    execFile(
+  const data = await new Promise((resolve2, reject) => {
+    execFile2(
       "ffprobe",
       [
         "-v",
@@ -1525,7 +2609,7 @@ async function probeUpload(file) {
               1
             )
           );
-        else resolve(stdout);
+        else resolve2(stdout);
       }
     );
   });
@@ -1635,7 +2719,7 @@ async function uploadFile(args, deps = {}) {
     if (!info.isFile() || info.size < 1 || info.size > maxUploadBytes)
       throw cliError(
         "invalid_size",
-        "Choose a non-empty video file no larger than 1 GB.",
+        "Choose a non-empty video file no larger than 5 GB.",
         void 0,
         1
       );
@@ -1748,7 +2832,7 @@ async function uploadFile(args, deps = {}) {
         const code = error instanceof EmitAndExit ? error.payload.error?.code : void 0;
         if (controller.signal.aborted || !["network_error", "busy"].includes(code ?? "") || attempt === 2)
           throw error;
-        await delay(1e3 * (attempt + 1), void 0, {
+        await delay2(1e3 * (attempt + 1), void 0, {
           signal: controller.signal
         });
       }
@@ -1814,6 +2898,11 @@ async function run() {
     emit(await uploadFile(args.slice(1)), 0);
     return;
   }
+  if (command === "setup") {
+    const result = await setup(args.slice(1));
+    emit(result, result.ok ? 0 : 1);
+    return;
+  }
   const spec = makeRequestSpec(command, args.slice(1));
   if (process.platform !== "darwin") {
     if (command === "login" || command === "logout") {
@@ -1829,7 +2918,8 @@ async function run() {
       emit(result, 0);
       return;
     }
-    await sendAndEmit(spec, endpoint);
+    if (command === "login") emit(await loginWithApp(endpoint), 0);
+    else await sendAndEmit(spec, endpoint);
     return;
   }
   await sendAndEmit(spec, await connectOrLaunch());

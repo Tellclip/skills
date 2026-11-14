@@ -1,0 +1,76 @@
+#!/bin/sh
+# MCP stdio server for the Tellclip app on this Mac: recording, the capture
+# browser, editing and sharing as tools.
+#
+# It is a bridge, not a server. The app serves MCP on a loopback port that
+# changes at every launch, behind a token that changes with it; both are in
+# cli.json. An MCP client cannot follow that, so it starts this script once
+# and talks to it over stdin/stdout (one JSON-RPC message per line). Each
+# request line is POSTed to the app and the answer printed as one line.
+#
+# Only tools macOS ships are used (sh, curl, plutil, open): no Node, no npm.
+set -u
+
+discovery="$HOME/Library/Application Support/TellClip/cli.json"
+port=""
+token=""
+
+read_endpoint() {
+  [ -f "$discovery" ] || return 1
+  port=$(/usr/bin/plutil -extract port raw -o - "$discovery" 2>/dev/null) || return 1
+  token=$(/usr/bin/plutil -extract token raw -o - "$discovery" 2>/dev/null) || return 1
+}
+
+app_answers() {
+  /usr/bin/curl -s -o /dev/null -m 2 -H "Authorization: Bearer $token" "http://127.0.0.1:$port/status"
+}
+
+# Finds the running app, or starts it hidden and in the background, the way
+# the tellclip CLI does. 60 tries, 0.25 s apart: the CLI's own 15 s limit.
+ensure_app() {
+  read_endpoint && app_answers && return 0
+  if [ -n "${TELLCLIP_APP:-}" ]; then
+    /usr/bin/open -g -j "$TELLCLIP_APP" 2>/dev/null
+  else
+    /usr/bin/open -g -j -b com.withmjp.tellclip 2>/dev/null
+  fi
+  tries=0
+  while [ "$tries" -lt 60 ]; do
+    sleep 0.25
+    read_endpoint && app_answers && return 0
+    tries=$((tries + 1))
+  done
+  return 1
+}
+
+# A request the app never saw still needs an answer, or the client waits for
+# good. Notifications (no id) get none.
+answer_unreachable() {
+  kind=$(printf '%s' "$1" | /usr/bin/plutil -type id - 2>/dev/null) || return 0
+  id=$(printf '%s' "$1" | /usr/bin/plutil -extract id raw -o - - 2>/dev/null) || return 0
+  [ "$kind" = "integer" ] || id="\"$id\""
+  printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"Tellclip is not running and could not be started. Install it from https://tellclip.com/download, open it once, then retry."}}\n' "$id"
+}
+
+post() {
+  # 1 h: share renders and uploads inside one request, like the CLI.
+  printf '%s' "$1" | /usr/bin/curl -s -m 3600 -X POST \
+    -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+    --data-binary @- "http://127.0.0.1:$port/mcp/agent"
+}
+
+while IFS= read -r line || [ -n "$line" ]; do
+  [ -n "$line" ] || continue
+  if ! ensure_app; then
+    answer_unreachable "$line"
+    continue
+  fi
+  if ! response=$(post "$line"); then
+    # The app quit or restarted since the last message: find it again, once.
+    if ensure_app && response=$(post "$line"); then :; else
+      answer_unreachable "$line"
+      continue
+    fi
+  fi
+  [ -n "$response" ] && printf '%s\n' "$response"
+done
