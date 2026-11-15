@@ -1,4 +1,46 @@
 #!/usr/bin/env node
+var __defProp = Object.defineProperty;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+
+// src/version.ts
+var version_exports = {};
+__export(version_exports, {
+  cliVersion: () => cliVersion,
+  isVersionOlder: () => isVersionOlder
+});
+function isVersionOlder(candidate, minimum) {
+  const candidateParts = numericVersion(candidate);
+  const minimumParts = numericVersion(minimum);
+  if (candidateParts === void 0 || minimumParts === void 0) return false;
+  const count = Math.max(candidateParts.length, minimumParts.length);
+  for (let index = 0; index < count; index += 1) {
+    const candidatePart = candidateParts[index] ?? 0;
+    const minimumPart = minimumParts[index] ?? 0;
+    if (candidatePart !== minimumPart) return candidatePart < minimumPart;
+  }
+  return false;
+}
+function numericVersion(version) {
+  const components = version.split(".");
+  if (components.length === 0 || components.some((component) => !/^\d+$/.test(component))) {
+    return void 0;
+  }
+  return components.map(Number);
+}
+var cliVersion;
+var init_version = __esm({
+  "src/version.ts"() {
+    "use strict";
+    cliVersion = true ? "0.3.0" : "dev";
+  }
+});
 
 // src/auth.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
@@ -87,30 +129,7 @@ import { readFileSync as readFileSync2 } from "node:fs";
 import http from "node:http";
 import { homedir as homedir2 } from "node:os";
 import { join } from "node:path";
-
-// src/version.ts
-var cliVersion = true ? "0.2.9" : "dev";
-function isVersionOlder(candidate, minimum) {
-  const candidateParts = numericVersion(candidate);
-  const minimumParts = numericVersion(minimum);
-  if (candidateParts === void 0 || minimumParts === void 0) return false;
-  const count = Math.max(candidateParts.length, minimumParts.length);
-  for (let index = 0; index < count; index += 1) {
-    const candidatePart = candidateParts[index] ?? 0;
-    const minimumPart = minimumParts[index] ?? 0;
-    if (candidatePart !== minimumPart) return candidatePart < minimumPart;
-  }
-  return false;
-}
-function numericVersion(version) {
-  const components = version.split(".");
-  if (components.length === 0 || components.some((component) => !/^\d+$/.test(component))) {
-    return void 0;
-  }
-  return components.map(Number);
-}
-
-// src/transport.ts
+init_version();
 var updateNext = "In Claude Code run `claude plugin update tellclip@tellclip` and restart the session; otherwise `npm i -g tellclip@latest`.";
 function discoveryFilePath() {
   return join(homedir2(), "Library", "Application Support", "TellClip", "cli.json");
@@ -482,6 +501,7 @@ function deleteAppSession() {
 }
 
 // src/guide.ts
+init_version();
 var agentGuideText = `# Tellclip agent guide (tellclip ${cliVersion})
 
 On a new machine, start with \`tellclip setup\`. It sets up the app and agent
@@ -1011,7 +1031,7 @@ lists the app's edit ops as \`edit_ops\`.
     background add|remove            add_background / remove_background
 
 CLI only: \`marks\` and the per-lane \`list\` commands (the agent reads
-\`get_draft\`), plus recording, the capture browser (\`browser \u2026\`),
+\`get_draft\`), plus recording (\`record --cdp\` in CI too), the capture browser (\`browser \u2026\`),
 \`preview\`, \`save\` and \`share\` \u2014 the in-app agent edits a draft; it does
 not record, browse or publish.
 
@@ -1108,7 +1128,66 @@ the same session replaces
 the clip at the SAME URL \u2014 safe to iterate. \`tellclip save --out demo.mp4\`
 renders locally without uploading. \`tellclip preview\` ends Agent Editing
 mode, reloads the editor from disk, focuses it, and starts review from the
-beginning. Run it when the editing pass is complete.`;
+beginning. Run it when the editing pass is complete.
+
+## Recording in CI (Linux runners, no Mac)
+
+A CI job can record the headless browser it already drives. The CLI attaches
+over the Chrome DevTools Protocol, records the page that is active, takes
+step text from \`tellclip mark\`, and \`share\` uploads the take; Tellclip
+edits it in the cloud (a zoom and a caption per step, idle time cut or sped
+up) and returns the clip's link, a thumbnail, the MP4 and a PR comment in
+Markdown. It needs Node 22+, ffmpeg and ffprobe on PATH, and
+\`TELLCLIP_API_KEY\` (an organization API key) for \`share\`.
+
+\`\`\`
+tellclip record --cdp <port|ws-url|http-url> [--title <text>]
+tellclip mark "<what> because <why>"      # before each action, every step
+tellclip title "<text>" | tellclip summary "<text>"
+tellclip stop                              # prints frames, duration, pixel ratio, marks
+tellclip share [--name <key>] [--out clip.mp4] [--comment-file clip.md] [--wait 180]
+               [--captions track|burned] [--tier standard|high|preview]
+\`\`\`
+
+- \`--cdp\` takes the browser's debugging port (launch it with
+  \`--remote-debugging-port=9222\`), or \`$(agent-browser get cdp-url)\`, or a
+  Playwright or Puppeteer browser started with a debugging port. \`record\`
+  returns once the first frame is on disk; a recorder keeps running in the
+  background until \`stop\`.
+- Launch the browser with \`--force-device-scale-factor=2\`. At pixel ratio 1
+  zoomed steps look soft; \`record\` and \`stop\` warn (\`low_pixel_ratio\`).
+- A mark opens a step: log it just before the step's actions. The pointer and
+  key events until the next mark belong to it. Keys are stored as times only.
+- The recorder follows one tab through navigations and reloads. If the
+  browser closes, the take ends as \`partial: true\` with what was captured.
+- \`stop\` encodes once with ffmpeg. Run \`stop\` and \`share\` under
+  \`if: always()\` so a failed test still gets its clip.
+- \`share\` prints one JSON object: \`clip_id\`, \`link\`, \`status\`,
+  \`thumbnail_url\`, \`mp4_path\`, \`duration_s\`, \`steps\`, \`comment_path\`.
+  \`status\` is \`ready\` when the MP4 is done. When \`--wait\` (seconds,
+  default 180) runs out first it is \`queued\`, \`rendering\` or
+  \`ingesting\`: the link already works and shows the progress, and
+  \`share\` again keeps waiting for the same render. Captions are a track on
+  the clip page; \`--captions burned\` also draws them into the MP4.
+- The clip is private to the organization and filed in its Agents workspace;
+  people open the link signed in. The thumbnail URL loads without sign-in, so
+  a PR comment can show it.
+- With \`CI=true\`, record/mark/stop/share never fail the job: they exit 0 and
+  print \`{"ok":false,"error":{\u2026}}\` plus a \`::warning::\` line. Add \`--strict\`
+  (or \`TELLCLIP_STRICT=1\`) to get non-zero exits. On a Mac, \`CI=true\` also
+  keeps mark/title/summary/stop/share off the Tellclip app; unset \`CI\` or set
+  \`TELLCLIP_STRICT=1\` to drive the app.
+- The clip key is repository + pull request + \`--name\` (default: the job
+  id). The same key gives the same clip and the same link; a new run replaces
+  its render. The comment starts with \`<!-- tellclip:<name> -->\` so a
+  workflow can edit the comment in place, e.g. \`gh pr comment "$PR"
+  --body-file clip.md --edit-last --create-if-none\`.
+- Fork pull requests get no secrets: \`share\` prints \`no_credentials\`,
+  uploads nothing, and the comment says the clip was skipped.
+- \`share\` talks to the server \`tellclip upload\` uses:
+  \`TELLCLIP_WEB_BASE_URL\`, default https://tellclip.com.
+- Take files live in \`$TELLCLIP_HOME\`, else \`$RUNNER_TEMP/tellclip\`, else
+  \`~/.tellclip\`.`;
 
 // src/output.ts
 function sortedForOutput(value) {
@@ -2009,19 +2088,19 @@ var exec = promisify(execFile);
 var runSetupCommand = async (command, args) => {
   await exec(command, args, { timeout: 6e5 });
 };
-async function downloadDmg(source, destination, run2) {
+async function downloadDmg(source, destination, run3) {
   if (source.startsWith("file://")) {
     await copyFile(fileURLToPath(source), destination);
   } else if (!/^[a-z][a-z\d+.-]*:/i.test(source)) {
     await copyFile(source, destination);
   } else {
     if (!/^https?:\/\//i.test(source)) throw new Error("The setup DMG URL must use HTTP, HTTPS, file://, or a local path.");
-    await run2("/usr/bin/curl", ["--fail", "--location", "--silent", "--show-error", "--max-time", "600", "--output", destination, "--url", source]);
+    await run3("/usr/bin/curl", ["--fail", "--location", "--silent", "--show-error", "--max-time", "600", "--output", destination, "--url", source]);
   }
 }
-async function setupAppDirectory(override, home = homedir3(), writable = async (path3) => {
+async function setupAppDirectory(override, home = homedir3(), writable = async (path8) => {
   try {
-    await access(path3, constants.W_OK);
+    await access(path8, constants.W_OK);
     return true;
   } catch {
     return false;
@@ -2030,7 +2109,7 @@ async function setupAppDirectory(override, home = homedir3(), writable = async (
   return override ?? (await writable("/Applications") ? "/Applications" : join2(home, "Applications"));
 }
 async function installSetupApp(source, directory, deps = {}) {
-  const run2 = deps.run ?? runSetupCommand;
+  const run3 = deps.run ?? runSetupCommand;
   const temporary = await mkdtemp(join2(deps.tempRoot ?? tmpdir(), "tellclip-setup-"));
   const dmg = join2(temporary, "TellClip.dmg");
   const mount = join2(temporary, "mount");
@@ -2038,14 +2117,14 @@ async function installSetupApp(source, directory, deps = {}) {
   let mounted = false;
   try {
     await mkdir(mount);
-    await (deps.download ?? downloadDmg)(source, dmg, run2);
-    await run2("/usr/bin/hdiutil", ["attach", dmg, "-nobrowse", "-readonly", "-mountpoint", mount]);
+    await (deps.download ?? downloadDmg)(source, dmg, run3);
+    await run3("/usr/bin/hdiutil", ["attach", dmg, "-nobrowse", "-readonly", "-mountpoint", mount]);
     mounted = true;
     try {
       await mkdir(directory, { recursive: true });
-      await run2("/usr/bin/ditto", [join2(mount, "TellClip.app"), app]);
+      await run3("/usr/bin/ditto", [join2(mount, "TellClip.app"), app]);
     } finally {
-      await run2("/usr/bin/hdiutil", ["detach", mount]);
+      await run3("/usr/bin/hdiutil", ["detach", mount]);
       mounted = false;
     }
     return app;
@@ -2151,9 +2230,9 @@ var projectBlock = `${projectMarker}
 
 After a change a person can see in the running product, record a short clip of it with the tellclip-demo skill and put the share link in your final message (and in the pull request, when there is one). Skip it for changes with nothing to watch.
 `;
-async function projectContent(path3) {
+async function projectContent(path8) {
   try {
-    return await readFile(path3, "utf8");
+    return await readFile(path8, "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw error;
@@ -2180,19 +2259,19 @@ async function configureProject(directory, dryRun) {
 async function setup(args, deps = {}) {
   const options = parseSetupArgs(args);
   const now = deps.now ?? Date.now;
-  const sleep2 = deps.sleep ?? delay;
+  const sleep4 = deps.sleep ?? delay;
   const interval = deps.pollIntervalMs ?? personPollMs;
   const findApp = deps.findApp ?? findRunningApp;
-  const client = deps.client ?? setupClient;
+  const client2 = deps.client ?? setupClient;
   const steps = [];
   const recovery = [];
   let endpoint;
   let status;
-  const call = async (op) => unwrap(await client({ method: "POST", path: "/rpc/setup", body: { op } }, endpoint, op === "test_take" ? 12e4 : 5e3));
+  const call = async (op) => unwrap(await client2({ method: "POST", path: "/rpc/setup", body: { op } }, endpoint, op === "test_take" ? 12e4 : 5e3));
   const refresh = async () => status = setupStatus(await call("status"));
   const waitFor = async (ready, deadline, pollMs = interval, refreshStatus = refresh) => {
     while (!ready() && now() < deadline) {
-      await sleep2(Math.min(pollMs, deadline - now()));
+      await sleep4(Math.min(pollMs, deadline - now()));
       await refreshStatus();
     }
   };
@@ -2215,7 +2294,7 @@ async function setup(args, deps = {}) {
           process.env.TELLCLIP_SETUP_DMG_URL ?? "https://downloads.tellclip.com/beta/TellClip-latest.dmg",
           await setupAppDirectory(process.env.TELLCLIP_SETUP_APP_DIR)
         )))();
-        await (deps.launchInstalled ?? ((path3) => runSetupCommand("/usr/bin/open", ["-g", "-j", path3])))(app);
+        await (deps.launchInstalled ?? ((path8) => runSetupCommand("/usr/bin/open", ["-g", "-j", path8])))(app);
         await waitFor(() => endpoint !== void 0, now() + appLaunchWaitMs, deps.pollIntervalMs ?? appLaunchPollMs, async () => {
           endpoint = await findApp();
         });
@@ -2369,6 +2448,7 @@ USAGE
   tellclip record (--browser | --window <id|title> | --app <name|bundle-id>
                   | --display <id|main> | --region <x,y,WxH>)
                   [--system-audio]
+  tellclip record --cdp <port|ws-url|http-url> [--title <text>] [--strict]   record a headless browser (Linux CI)
   tellclip status
   tellclip pause | resume
   tellclip mark <label> [--at <x,y>] [--t <seconds> | --epoch-ms <ms>] [--session <s>]
@@ -2427,6 +2507,9 @@ USAGE
   tellclip preview [--session <s>]
   tellclip save [--out <path>] [--session <s>]
   tellclip share [--session <s>]
+  tellclip share [--name <key>] [--out <clip.mp4>] [--comment-file <path>] [--wait <seconds>]
+                 [--captions track|burned] [--tier standard|high|preview] [--strict]
+                 CI take: upload, render in the cloud; prints the clip link, MP4 + PR comment
   tellclip login | logout
   tellclip guide
 
@@ -2444,6 +2527,14 @@ or x,y (640,300) in viewport CSS pixels.
 the Tellclip extension instead of the capture browser. The agent may open the
 URL's site and the --allow sites only; a click on Delete, Send, Pay and the like
 needs "confirm": true, which you send only after the person said yes.
+
+CI takes (record --cdp): mark, title, summary, stop and share go to the CI take
+while it is open, and always on Linux. With CI=true they exit 0 on failure and
+print {"ok":false,...} plus a ::warning:: line; --strict or TELLCLIP_STRICT=1
+restores non-zero exits. With CI=true they never reach the Mac app; unset CI or
+set TELLCLIP_STRICT=1 to drive it. Needs ffmpeg; share needs TELLCLIP_API_KEY
+and uses the server upload uses (TELLCLIP_WEB_BASE_URL, default
+https://tellclip.com).
 
 All output is JSON. Edit and transcript cue times are seconds in the source
 recording; edit coordinates are normalized 0-1 from the top-left of the captured
@@ -2679,9 +2770,7 @@ async function probeUpload(file) {
   }
   return Number(media.format.duration);
 }
-async function uploadFile(args, deps = {}) {
-  const { file, title, ...authored } = parseUploadArgs(args);
-  const base = deps.base ?? normalizedWebBaseURL();
+function assertUploadOrigin(base) {
   let origin;
   try {
     origin = new URL(base);
@@ -2701,6 +2790,11 @@ async function uploadFile(args, deps = {}) {
       1
     );
   }
+}
+async function uploadFile(args, deps = {}) {
+  const { file, title, ...authored } = parseUploadArgs(args);
+  const base = deps.base ?? normalizedWebBaseURL();
+  assertUploadOrigin(base);
   const token = deps.token ?? uploadToken(base);
   const fetcher = deps.fetch ?? fetch;
   const handle = await open(file, "r").catch(() => {
@@ -2915,7 +3009,1868 @@ async function uploadFile(args, deps = {}) {
 }
 
 // src/main.ts
-async function run() {
+init_version();
+
+// src/ci/commands.ts
+import { existsSync as existsSync4, readFileSync as readFileSync7 } from "node:fs";
+import path6 from "node:path";
+
+// src/ci/finalize.ts
+import { execFile as execFile3 } from "node:child_process";
+import { existsSync as existsSync3, mkdirSync as mkdirSync4, readFileSync as readFileSync6, rmSync as rmSync2, statSync as statSync2, writeFileSync as writeFileSync4 } from "node:fs";
+import { availableParallelism } from "node:os";
+import path5 from "node:path";
+init_version();
+
+// src/ci/session-build.ts
+var round = (value, digits = 4) => Math.round(value * 10 ** digits) / 10 ** digits;
+var clamp01 = (value) => Math.min(1, Math.max(0, value));
+function orderFrames(frames) {
+  const byTime = /* @__PURE__ */ new Map();
+  for (const frame of frames) {
+    if (!Number.isFinite(frame.ts) || frame.bytes <= 0) continue;
+    const previous = byTime.get(frame.ts);
+    if (previous === void 0 || previous.i < frame.i) byTime.set(frame.ts, frame);
+  }
+  return [...byTime.values()].sort((a, b) => a.ts - b.ts);
+}
+function buildInput(raw, firstMs, endMs) {
+  const out = [];
+  for (const event of [...raw].sort((a, b) => a.t - b.t)) {
+    if (event.t < firstMs - 1e3 || event.t > endMs + 1e3) continue;
+    const t = round(Math.max(0, (event.t - firstMs) / 1e3));
+    if (event.type === "down" || event.type === "up") {
+      if (event.x === void 0 || event.y === void 0) continue;
+      const side = event.button === 2 ? "right" : event.button === 0 || event.button === void 0 ? "left" : void 0;
+      if (side === void 0) continue;
+      out.push({ t, type: `${side}${event.type === "down" ? "Down" : "Up"}`, x: round(clamp01(event.x)), y: round(clamp01(event.y)) });
+    } else if (event.type === "wheel") {
+      out.push({
+        t,
+        type: "scroll",
+        ...event.x === void 0 || event.y === void 0 ? {} : { x: round(clamp01(event.x)), y: round(clamp01(event.y)) },
+        dx: event.dx ?? 0,
+        dy: event.dy ?? 0
+      });
+    } else if (event.type === "key") {
+      out.push({ t, type: "key" });
+    }
+  }
+  return out;
+}
+var defaultCursorOptions = { glideSeconds: 0.7, leadSeconds: 0.12, sampleHz: 60, start: { x: 0.5, y: 0.5 } };
+var ease = (u) => u < 0.5 ? 4 * u * u * u : 1 - (-2 * u + 2) ** 3 / 2;
+function synthesizeCursor(input, rawMoves, durationSeconds, options = defaultCursorOptions) {
+  const points = [];
+  for (const event of input) {
+    if (event.type === "leftDown" || event.type === "rightDown" || event.type === "leftUp" || event.type === "rightUp") {
+      points.push({ t: event.t, x: event.x, y: event.y, click: event.type.endsWith("Down") });
+    }
+  }
+  for (const move of rawMoves) points.push({ t: move.t, x: move.x, y: move.y, click: false });
+  points.sort((a, b) => a.t - b.t);
+  const waypoints = [];
+  for (const point of points) {
+    const last = waypoints.at(-1);
+    if (last !== void 0 && point.t - last.t < 0.03) {
+      const t = point.click || !last.click ? point.t : last.t;
+      waypoints[waypoints.length - 1] = { t, x: point.x, y: point.y, click: last.click || point.click };
+    } else {
+      waypoints.push({ ...point });
+    }
+  }
+  const samples = [];
+  const push = (t, x2, y2) => {
+    const sample = { t: round(Math.max(0, t)), x: round(clamp01(x2)), y: round(clamp01(y2)), isInsideTarget: true, cursorId: "arrow" };
+    const last = samples.at(-1);
+    if (last !== void 0 && sample.t <= last.t) {
+      if (sample.t === last.t) samples[samples.length - 1] = sample;
+      return;
+    }
+    samples.push(sample);
+  };
+  let x = options.start.x;
+  let y = options.start.y;
+  let previousT = 0;
+  push(0, x, y);
+  const step = 1 / options.sampleHz;
+  for (const waypoint of waypoints) {
+    const distance = Math.hypot(waypoint.x - x, waypoint.y - y);
+    if (distance < 2e-3) {
+      previousT = waypoint.t;
+      continue;
+    }
+    const begin = Math.max(previousT, waypoint.t - options.glideSeconds);
+    const arrive = waypoint.click ? Math.max(begin, waypoint.t - options.leadSeconds) : waypoint.t;
+    if (arrive - begin >= step) {
+      push(begin, x, y);
+      for (let t = begin + step; t < arrive; t += step) {
+        const u = ease((t - begin) / (arrive - begin));
+        push(t, x + (waypoint.x - x) * u, y + (waypoint.y - y) * u);
+      }
+    }
+    push(arrive, waypoint.x, waypoint.y);
+    if (waypoint.t > arrive) push(waypoint.t, waypoint.x, waypoint.y);
+    x = waypoint.x;
+    y = waypoint.y;
+    previousT = waypoint.t;
+  }
+  push(Math.max(durationSeconds, previousT), x, y);
+  return samples;
+}
+function buildMarks(lines, firstMs, durationSeconds, defaults) {
+  let title = defaults.title;
+  let summary = "";
+  const marks = [];
+  for (const line of lines) {
+    if (typeof line.text !== "string") continue;
+    if (line.kind === "title") title = line.text;
+    else if (line.kind === "summary") summary = line.text;
+    else if (line.kind === "mark") {
+      const seconds = line.t ?? (line.epoch_ms === void 0 ? void 0 : (line.epoch_ms - firstMs) / 1e3);
+      if (seconds === void 0 || !Number.isFinite(seconds)) continue;
+      if (seconds > durationSeconds + 0.5) continue;
+      marks.push({ t: round(Math.min(durationSeconds, Math.max(0, seconds)), 3), text: line.text, ...line.at ? { at: line.at } : {} });
+    }
+  }
+  marks.sort((a, b) => a.t - b.t);
+  return { version: 1, title, summary, partial: defaults.partial, ended_reason: defaults.endedReason, marks };
+}
+var percentile = (sorted, p) => sorted.length === 0 ? 0 : sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
+function frameStats(frames, durationSeconds) {
+  const gaps = frames.slice(1).map((frame, index) => frame.ts - frames[index].ts).sort((a, b) => a - b);
+  const lags = frames.map((frame) => frame.recv - frame.ts).sort((a, b) => a - b);
+  const busy = gaps.filter((gap) => gap < 100);
+  const bytes = frames.reduce((sum, frame) => sum + frame.bytes, 0);
+  return {
+    frames: frames.length,
+    duration_s: round(durationSeconds, 3),
+    fps_mean: round(frames.length / Math.max(durationSeconds, 1e-3), 1),
+    fps_busy: busy.length ? round(1e3 / (busy.reduce((a, b) => a + b, 0) / busy.length), 1) : null,
+    gap_ms: { p50: round(percentile(gaps, 0.5), 1), p95: round(percentile(gaps, 0.95), 1), p99: round(percentile(gaps, 0.99), 1), max: round(gaps.at(-1) ?? 0, 1) },
+    receive_lag_ms: { p50: round(percentile(lags, 0.5), 1), p99: round(percentile(lags, 0.99), 1), max: round(lags.at(-1) ?? 0, 1) },
+    bytes_total: bytes,
+    kb_per_frame: frames.length ? round(bytes / frames.length / 1024, 1) : 0,
+    sizes: [...new Set(frames.map((frame) => `${frame.w}x${frame.h}`))]
+  };
+}
+function concatScript(frames, endMs, fileFor) {
+  const lines = ["ffconcat version 1.0"];
+  const entry = (frame, seconds) => {
+    lines.push(`file '${fileFor(frame).replace(/'/g, "'\\''")}'`, "option framerate 90000", `duration ${seconds.toFixed(6)}`);
+  };
+  frames.forEach((frame, index) => {
+    const next = index + 1 < frames.length ? frames[index + 1].ts : Math.max(endMs, frame.ts + 1);
+    entry(frame, (next - frame.ts) / 1e3);
+  });
+  const last = frames.at(-1);
+  if (last !== void 0) entry(last, 1e-3);
+  return lines.join("\n") + "\n";
+}
+function jpegSize(data) {
+  let index = 2;
+  while (index + 9 < data.length) {
+    if (data[index] !== 255) {
+      index += 1;
+      continue;
+    }
+    const marker = data[index + 1];
+    if (marker >= 192 && marker <= 207 && marker !== 196 && marker !== 200 && marker !== 204) {
+      return { h: data.readUInt16BE(index + 5), w: data.readUInt16BE(index + 7) };
+    }
+    if (marker === 216 || marker === 1 || marker >= 208 && marker <= 215) {
+      index += 2;
+      continue;
+    }
+    index += 2 + data.readUInt16BE(index + 2);
+  }
+  return void 0;
+}
+
+// src/ci/recorder.ts
+import { spawn, execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { mkdirSync as mkdirSync3, openSync, readFileSync as readFileSync5, writeFileSync as writeFileSync3, existsSync as existsSync2 } from "node:fs";
+import { writeFile as writeFile2 } from "node:fs/promises";
+import path4 from "node:path";
+
+// src/ci/cdp.ts
+var CdpError = class extends Error {
+  constructor(method, message) {
+    super(`${method}: ${message}`);
+    this.method = method;
+  }
+};
+function connectCdp(url, timeoutMs = 1e4) {
+  return new Promise((resolve2, reject) => {
+    const WebSocketClass = globalThis.WebSocket;
+    if (WebSocketClass === void 0) {
+      reject(new Error("This Node has no built-in WebSocket. Use Node 22 or newer."));
+      return;
+    }
+    const ws = new WebSocketClass(url);
+    let nextId = 0;
+    let open3 = false;
+    const pending = /* @__PURE__ */ new Map();
+    const handlers = /* @__PURE__ */ new Map();
+    const closeHandlers = [];
+    const timer = setTimeout(() => {
+      if (!open3) {
+        try {
+          ws.close();
+        } catch {
+        }
+        reject(new Error(`Timed out connecting to ${cdpDisplay(url)}.`));
+      }
+    }, timeoutMs);
+    ws.onmessage = (event) => {
+      let message;
+      try {
+        message = JSON.parse(typeof event.data === "string" ? event.data : Buffer.from(event.data).toString("utf8"));
+      } catch {
+        return;
+      }
+      if (typeof message.id === "number") {
+        const entry = pending.get(message.id);
+        if (entry === void 0) return;
+        pending.delete(message.id);
+        if (message.error !== void 0) entry.reject(new CdpError(entry.method, message.error.message ?? "failed"));
+        else entry.resolve(message.result ?? {});
+        return;
+      }
+      if (typeof message.method === "string") {
+        for (const handler of handlers.get(message.method) ?? []) handler(message.params ?? {}, message.sessionId);
+      }
+    };
+    ws.onclose = () => {
+      for (const entry of pending.values()) entry.reject(new CdpError(entry.method, "connection closed"));
+      pending.clear();
+      if (!open3) {
+        clearTimeout(timer);
+        reject(new Error(`Could not connect to ${cdpDisplay(url)}.`));
+        return;
+      }
+      open3 = false;
+      for (const handler of closeHandlers) handler();
+    };
+    ws.onerror = () => {
+    };
+    ws.onopen = () => {
+      open3 = true;
+      clearTimeout(timer);
+      const write = (method, params, sessionId, id) => {
+        ws.send(JSON.stringify(sessionId === void 0 ? { id, method, params } : { id, method, params, sessionId }));
+      };
+      resolve2({
+        send(method, params = {}, sessionId) {
+          if (!open3) return Promise.reject(new CdpError(method, "connection closed"));
+          const id = ++nextId;
+          return new Promise((resolveSend, rejectSend) => {
+            pending.set(id, { method, resolve: resolveSend, reject: rejectSend });
+            write(method, params, sessionId, id);
+          });
+        },
+        post(method, params = {}, sessionId) {
+          if (!open3) return;
+          const id = ++nextId;
+          pending.set(id, { method, resolve: () => {
+          }, reject: () => {
+          } });
+          write(method, params, sessionId, id);
+        },
+        on(method, handler) {
+          handlers.set(method, [...handlers.get(method) ?? [], handler]);
+        },
+        onClose(handler) {
+          closeHandlers.push(handler);
+        },
+        close() {
+          try {
+            ws.close();
+          } catch {
+          }
+        }
+      });
+    };
+  });
+}
+function cdpDisplay(text) {
+  const value = text.trim();
+  if (/^\d{1,5}$/.test(value)) return `127.0.0.1:${value}`;
+  try {
+    const url = new URL(value);
+    return url.host ? `${url.protocol}//${url.host}` : "the --cdp address";
+  } catch {
+    return "the --cdp address";
+  }
+}
+function parseCdpTarget(text) {
+  const value = text.trim();
+  if (/^\d{1,5}$/.test(value)) {
+    const port = Number(value);
+    if (port < 1 || port > 65535) throw new Error(`--cdp port must be 1-65535, got '${value}'.`);
+    return { httpBase: `http://127.0.0.1:${port}` };
+  }
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("--cdp needs a port, an http URL or a ws URL.");
+  }
+  if (url.protocol === "ws:" || url.protocol === "wss:") {
+    return { webSocketUrl: url.toString(), page: url.pathname.startsWith("/devtools/page/") };
+  }
+  if (url.protocol === "http:" || url.protocol === "https:") {
+    return { httpBase: `${url.protocol}//${url.host}` };
+  }
+  throw new Error(`--cdp needs a port, an http URL or a ws URL, got ${cdpDisplay(value)}.`);
+}
+async function resolveCdpEndpoint(text, fetcher = fetch) {
+  const parsed = parseCdpTarget(text);
+  if ("webSocketUrl" in parsed) {
+    return parsed.page ? { kind: "page", webSocketUrl: parsed.webSocketUrl } : { kind: "browser", webSocketUrl: parsed.webSocketUrl };
+  }
+  const response = await fetcher(`${parsed.httpBase}/json/version`, { signal: AbortSignal.timeout(5e3) });
+  const body = await response.json();
+  if (typeof body.webSocketDebuggerUrl !== "string") throw new Error("The DevTools endpoint did not report a browser WebSocket URL.");
+  return { kind: "browser", webSocketUrl: body.webSocketDebuggerUrl, httpBase: parsed.httpBase };
+}
+
+// src/ci/take-store.ts
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync4, renameSync as renameSync2, rmSync, statSync, writeFileSync as writeFileSync2, existsSync, appendFileSync } from "node:fs";
+import { homedir as homedir4 } from "node:os";
+import path3 from "node:path";
+
+// src/ci/take-logic.ts
+var transitions = {
+  first_frame: { from: [null], to: "recording" },
+  unreachable: { from: [null], to: "failed" },
+  stop: { from: ["recording"], to: "stopping" },
+  encoded: { from: ["stopping"], to: "recorded" },
+  no_frames: { from: ["stopping"], to: "failed" },
+  share: { from: ["recorded", "failed", "uploading"], to: "uploading" },
+  // uploading: only when its owner is dead
+  uploaded: { from: ["uploading"], to: "rendering" },
+  upload_failed: { from: ["uploading"], to: "failed" },
+  render_done: { from: ["rendering"], to: "shared" },
+  render_failed: { from: ["rendering"], to: "failed" }
+};
+function nextPhase(from, event) {
+  const rule = transitions[event];
+  return rule.from.includes(from) ? rule.to : void 0;
+}
+function decideStop(phase, ownerAlive, hasSession) {
+  switch (phase) {
+    case null:
+      return { kind: "no_take" };
+    case "recording":
+      return { kind: "finalize", recorderAlive: ownerAlive };
+    case "stopping":
+      return ownerAlive ? { kind: "wait" } : { kind: "resume_finalize" };
+    case "failed":
+      return hasSession ? { kind: "report" } : { kind: "unreachable" };
+    default:
+      return { kind: "report" };
+  }
+}
+function decideShare(phase, ownerAlive, hasSession) {
+  switch (phase) {
+    case null:
+      return { kind: "no_take" };
+    case "recording":
+      return { kind: "stop_first" };
+    case "stopping":
+      return { kind: "wait_stop" };
+    case "recorded":
+      return { kind: "upload" };
+    case "uploading":
+      return ownerAlive ? { kind: "busy" } : { kind: "upload" };
+    case "rendering":
+      return { kind: "poll" };
+    case "shared":
+      return { kind: "report" };
+    case "failed":
+      return hasSession ? { kind: "upload" } : { kind: "not_recorded" };
+  }
+}
+var ciTakeMaxAgeMs = 24 * 60 * 6e4;
+function routeTakeCommand(command, take) {
+  if (take === void 0 || take.ageMs > ciTakeMaxAgeMs) return "mac_app";
+  const live = take.phase === "recording" || take.phase === "stopping";
+  if (command !== "share") return live ? "ci_take" : "mac_app";
+  switch (take.phase) {
+    case "recording":
+    case "stopping":
+    case "recorded":
+    case "uploading":
+    case "rendering":
+      return "ci_take";
+    case "failed":
+      return take.hasSession ? "ci_take" : "mac_app";
+    case "shared":
+      return "mac_app";
+  }
+}
+function acceptsMarks(phase) {
+  return phase === "recording";
+}
+function acceptsContent(phase) {
+  return phase === "recording" || phase === "stopping" || phase === "recorded" || phase === "failed";
+}
+var terminalRenderStatuses = /* @__PURE__ */ new Set(["ready", "failed", "cancelled", "superseded"]);
+
+// src/ci/take-store.ts
+function tellclipHome(env = process.env) {
+  if (env.TELLCLIP_HOME) return path3.resolve(env.TELLCLIP_HOME);
+  if (env.RUNNER_TEMP) return path3.join(path3.resolve(env.RUNNER_TEMP), "tellclip");
+  return path3.join(homedir4(), ".tellclip");
+}
+function takesDir(home = tellclipHome()) {
+  return path3.join(home, "takes");
+}
+function newTakeName(now = /* @__PURE__ */ new Date()) {
+  const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\..*$/, "").replace("T", "-");
+  return `take-${stamp}-${Math.random().toString(36).slice(2, 6)}`;
+}
+function currentTakeDir(home = tellclipHome()) {
+  try {
+    const name = readFileSync4(path3.join(home, "current"), "utf8").trim();
+    if (!/^[\w.-]+$/.test(name)) return void 0;
+    const dir = path3.join(takesDir(home), name);
+    return existsSync(dir) ? dir : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function setCurrentTake(dir, home = tellclipHome()) {
+  mkdirSync2(home, { recursive: true });
+  atomicWrite(path3.join(home, "current"), path3.basename(dir) + "\n");
+}
+function clearCurrentTake(take, home = tellclipHome()) {
+  const file = path3.join(home, "current");
+  try {
+    if (readFileSync4(file, "utf8").trim() === take) rmSync(file, { force: true });
+  } catch {
+  }
+}
+function readState(dir) {
+  try {
+    return JSON.parse(readFileSync4(path3.join(dir, "state.json"), "utf8"));
+  } catch {
+    return void 0;
+  }
+}
+function atomicWrite(file, data) {
+  const temporary = `${file}.${process.pid}.tmp`;
+  writeFileSync2(temporary, data);
+  renameSync2(temporary, file);
+}
+function appendLine(file, object) {
+  appendFileSync(file, JSON.stringify(object) + "\n");
+}
+function readJsonLines(file) {
+  let text;
+  try {
+    text = readFileSync4(file, "utf8");
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      out.push(JSON.parse(line));
+    } catch {
+    }
+  }
+  return out;
+}
+function isAlive(pid) {
+  if (pid === void 0 || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+var lockStaleMs = 15e3;
+function withLock(dir, body) {
+  const lock = path3.join(dir, "state.lock");
+  const deadline = Date.now() + 1e4;
+  for (; ; ) {
+    try {
+      mkdirSync2(lock);
+      writeFileSync2(path3.join(lock, "pid"), String(process.pid));
+      break;
+    } catch {
+      let stale = false;
+      try {
+        const pid = Number(readFileSync4(path3.join(lock, "pid"), "utf8"));
+        stale = !isAlive(pid) || Date.now() - statSync(lock).mtimeMs > lockStaleMs;
+      } catch {
+        try {
+          stale = Date.now() - statSync(lock).mtimeMs > 1e3;
+        } catch {
+          stale = false;
+        }
+      }
+      if (stale) rmSync(lock, { recursive: true, force: true });
+      else if (Date.now() > deadline) throw new Error("state.json is locked by another process.");
+      else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }
+  }
+  try {
+    return body();
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
+  }
+}
+var TransitionRefused = class extends Error {
+  constructor(current, event) {
+    super(`Take is ${current?.phase ?? "not started"}; ${event} does not apply.`);
+    this.current = current;
+    this.event = event;
+  }
+};
+function transition(dir, event, patch = {}, guard) {
+  return withLock(dir, () => {
+    const current = readState(dir);
+    const to = nextPhase(current?.phase ?? null, event);
+    if (to === void 0 || guard !== void 0 && !guard(current)) throw new TransitionRefused(current, event);
+    const next = {
+      ...current ?? { version: 1, take: path3.basename(dir) },
+      ...patch,
+      phase: to,
+      updated_at: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    atomicWrite(path3.join(dir, "state.json"), JSON.stringify(next, null, 2) + "\n");
+    return next;
+  });
+}
+function updateState(dir, patch, expect) {
+  return withLock(dir, () => {
+    const current = readState(dir);
+    if (current === void 0 || expect !== void 0 && current.phase !== expect) return void 0;
+    const next = { ...current, ...patch, updated_at: (/* @__PURE__ */ new Date()).toISOString() };
+    atomicWrite(path3.join(dir, "state.json"), JSON.stringify(next, null, 2) + "\n");
+    return next;
+  });
+}
+function claimOwner(dir, phase) {
+  return withLock(dir, () => {
+    const current = readState(dir);
+    if (current?.phase !== phase || isAlive(current.owner_pid)) return false;
+    const next = { ...current, owner_pid: process.pid, updated_at: (/* @__PURE__ */ new Date()).toISOString() };
+    atomicWrite(path3.join(dir, "state.json"), JSON.stringify(next, null, 2) + "\n");
+    return true;
+  });
+}
+
+// src/ci/recorder.ts
+var recorderSubcommand = "__ci-recorder";
+var cdpEnv = "TELLCLIP_RECORDER_CDP";
+var firstFrameTimeoutMs = 15e3;
+var defaultJpegQuality = 90;
+function newBindingName() {
+  return `__tc${randomBytes(16).toString("hex")}`;
+}
+function inputListenerSource(binding) {
+  if (!/^__tc[0-9a-f]{32}$/.test(binding)) throw new Error("bad binding name");
+  return `(() => {
+  const call = window.${binding};
+  if (typeof call !== "function") return;
+  try { delete window.${binding}; } catch (_) {}
+  if (window !== window.top) return;
+  const origin = performance.timeOrigin;
+  const send = (event) => { try { call(JSON.stringify(event)); } catch (_) {} };
+  const where = (e) => ({ x: e.clientX / Math.max(1, innerWidth), y: e.clientY / Math.max(1, innerHeight) });
+  const opts = { capture: true, passive: true };
+  addEventListener("pointerdown", (e) => send({ type: "down", t: origin + e.timeStamp, button: e.button, ...where(e) }), opts);
+  addEventListener("pointerup", (e) => send({ type: "up", t: origin + e.timeStamp, button: e.button, ...where(e) }), opts);
+  addEventListener("pointermove", (e) => send({ type: "move", t: origin + e.timeStamp, ...where(e) }), opts);
+  addEventListener("wheel", (e) => send({ type: "wheel", t: origin + e.timeStamp, dx: e.deltaX, dy: e.deltaY, ...where(e) }), opts);
+  addEventListener("keydown", (e) => send({ type: "key", t: origin + e.timeStamp }), opts);
+})()`;
+}
+function ffmpegAvailable() {
+  const check = (binary) => {
+    try {
+      execFileSync(binary, ["-version"], { stdio: "ignore", timeout: 1e4 });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  return { ffmpeg: check("ffmpeg"), ffprobe: check("ffprobe") };
+}
+function requireFfmpeg() {
+  const found = ffmpegAvailable();
+  if (!found.ffmpeg || !found.ffprobe) {
+    throw cliError(
+      "ffmpeg_missing",
+      `${!found.ffmpeg ? "ffmpeg" : "ffprobe"} is not on PATH. Recording in CI encodes the take with ffmpeg.`,
+      "Install it first, e.g. sudo apt-get install -y ffmpeg, then run tellclip record again.",
+      1
+    );
+  }
+}
+var sleep2 = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
+async function startCdpRecording(options) {
+  requireFfmpeg();
+  const home = tellclipHome();
+  const existing = currentTakeDir(home);
+  if (existing !== void 0) {
+    const state = readState(existing);
+    if (state !== void 0 && (state.phase === "recording" || state.phase === "stopping") && isAlive(state.recorder_pid ?? state.owner_pid)) {
+      throw cliError("take_active", `A take is already ${state.phase} (${state.take}).`, "Run tellclip stop first.", 1);
+    }
+  }
+  const dir = path4.join(takesDir(home), newTakeName());
+  mkdirSync3(path4.join(dir, "frames"), { recursive: true });
+  const quality = Number(process.env.TELLCLIP_JPEG_QUALITY ?? defaultJpegQuality);
+  const request = {
+    cdp: cdpDisplay(options.cdp),
+    ...options.title === void 0 ? {} : { title: options.title },
+    quality: Number.isFinite(quality) && quality >= 1 && quality <= 100 ? Math.round(quality) : defaultJpegQuality,
+    cli_version: (await Promise.resolve().then(() => (init_version(), version_exports))).cliVersion,
+    requested_at: Date.now()
+  };
+  writeFileSync3(path4.join(dir, "request.json"), JSON.stringify(request, null, 2) + "\n");
+  setCurrentTake(dir, home);
+  const log = openSync(path4.join(dir, "recorder.log"), "a");
+  const child = spawn(process.execPath, [process.argv[1], recorderSubcommand, dir], {
+    detached: true,
+    stdio: ["ignore", log, log],
+    env: { ...process.env, [cdpEnv]: options.cdp }
+  });
+  child.unref();
+  const deadline = Date.now() + firstFrameTimeoutMs + 2e3;
+  while (Date.now() < deadline) {
+    const state = readState(dir);
+    if (state?.phase === "recording") {
+      const page = readPage(dir);
+      const result = {
+        ok: true,
+        recording: true,
+        take: state.take,
+        take_dir: dir,
+        recorder_pid: state.recorder_pid,
+        origin: page?.origin,
+        viewport: page ? { width: page.width, height: page.height } : void 0,
+        pixel_ratio: page?.dpr,
+        first_frame_ms: state.first_frame_ms !== void 0 ? state.first_frame_ms - request.requested_at : void 0
+      };
+      if (page !== void 0 && page.dpr < 2) result.warnings = [pixelRatioWarning(page.dpr)];
+      return result;
+    }
+    if (state?.phase === "failed") {
+      const error = state.error ?? {};
+      throw cliError(error.code ?? "browser_unreachable", error.message ?? "Could not record the browser.", error.next, 1);
+    }
+    if (child.exitCode !== null && state === void 0) break;
+    await sleep2(50);
+  }
+  try {
+    if (child.pid) process.kill(child.pid, "SIGKILL");
+  } catch {
+  }
+  const failure2 = {
+    code: "browser_unreachable",
+    message: "No frame arrived from the browser.",
+    next: "Check the --cdp address and that the page is open, then run tellclip record again."
+  };
+  try {
+    transition(dir, "unreachable", { error: failure2 });
+  } catch {
+  }
+  throw cliError(failure2.code, failure2.message, failure2.next, 1);
+}
+function pixelRatioWarning(dpr) {
+  return {
+    code: "low_pixel_ratio",
+    message: `The browser renders at pixel ratio ${dpr}; zoomed steps will look soft.`,
+    next: "Launch the browser with --force-device-scale-factor=2."
+  };
+}
+function originOf(url) {
+  if (url === void 0) return void 0;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "null";
+  }
+}
+function readPage(dir) {
+  try {
+    return JSON.parse(readFileSync5(path4.join(dir, "page.json"), "utf8"));
+  } catch {
+    return void 0;
+  }
+}
+async function pickPage(connection, httpBase) {
+  const { targetInfos } = await connection.send("Target.getTargets");
+  const pages = targetInfos.filter((target) => target.type === "page" && !target.url.startsWith("devtools://"));
+  if (pages.length === 0) throw new Error("The browser has no open page.");
+  if (httpBase !== void 0) {
+    try {
+      const list = await (await fetch(`${httpBase}/json/list`, { signal: AbortSignal.timeout(3e3) })).json();
+      const first = list.find((entry) => entry.type === "page" && pages.some((page) => page.targetId === entry.id));
+      if (first !== void 0) return first.id;
+    } catch {
+    }
+  }
+  return (pages.find((page) => page.attached) ?? pages[0]).targetId;
+}
+async function runRecorder(dir) {
+  const request = JSON.parse(readFileSync5(path4.join(dir, "request.json"), "utf8"));
+  const cdp = process.env[cdpEnv] ?? request.cdp;
+  delete process.env[cdpEnv];
+  const binding = newBindingName();
+  const log = (message) => process.stdout.write(`${(/* @__PURE__ */ new Date()).toISOString()} ${message}
+`);
+  const fail = (code, message, next) => {
+    log(`fail ${code}: ${message}`);
+    try {
+      transition(dir, "unreachable", { error: { code, message, next } });
+    } catch {
+    }
+    process.exit(0);
+  };
+  let connection;
+  let sessionId;
+  let targetId;
+  try {
+    const endpoint = await resolveCdpEndpoint(cdp);
+    connection = await connectCdp(endpoint.webSocketUrl);
+    if (endpoint.kind === "browser") {
+      let httpBase = endpoint.httpBase;
+      if (httpBase === void 0) {
+        const ws = new URL(endpoint.webSocketUrl);
+        httpBase = `${ws.protocol === "wss:" ? "https:" : "http:"}//${ws.host}`;
+      }
+      targetId = await pickPage(connection, httpBase);
+      sessionId = (await connection.send("Target.attachToTarget", { targetId, flatten: true })).sessionId;
+    }
+  } catch (error) {
+    return fail(
+      "browser_unreachable",
+      `Tellclip could not attach to the browser at ${request.cdp}: ${error instanceof Error ? error.message : String(error)}`,
+      "Start the browser with --remote-debugging-port=<port> and pass that port, or pass agent-browser get cdp-url."
+    );
+  }
+  const framesFile = path4.join(dir, "frames.jsonl");
+  const inputFile = path4.join(dir, "input.jsonl");
+  const eventsFile = path4.join(dir, "events.jsonl");
+  let frameCount = 0;
+  let firstFrameWritten = false;
+  let lastFrameTs = 0;
+  let ending = false;
+  const writes = /* @__PURE__ */ new Set();
+  const cpuStart = process.cpuUsage();
+  let rssPeak = 0;
+  const send2 = (method, params = {}) => connection.send(method, params, sessionId);
+  connection.on("Page.screencastFrame", (params, from) => {
+    if (from !== sessionId) return;
+    connection.post("Page.screencastFrameAck", { sessionId: params.sessionId }, sessionId);
+    if (ending) return;
+    const recv = Date.now();
+    const metadata = params.metadata;
+    const data = Buffer.from(params.data, "base64");
+    const size = jpegSize(data) ?? { w: 0, h: 0 };
+    const i = ++frameCount;
+    const ts = typeof metadata.timestamp === "number" ? metadata.timestamp * 1e3 : recv;
+    lastFrameTs = Math.max(lastFrameTs, ts);
+    const file = path4.join(dir, "frames", `f${String(i).padStart(7, "0")}.jpg`);
+    const write = writeFile2(file, data).then(() => {
+      appendLine(framesFile, { i, ts, recv, bytes: data.length, w: size.w, h: size.h, vw: metadata.deviceWidth, vh: metadata.deviceHeight });
+      if (!firstFrameWritten) {
+        firstFrameWritten = true;
+        try {
+          transition(dir, "first_frame", { recorder_pid: process.pid, cdp: request.cdp, title: request.title, first_frame_ms: Date.now(), started_at: (/* @__PURE__ */ new Date()).toISOString() });
+          log(`first frame ${size.w}x${size.h}`);
+        } catch (error) {
+          log(`first_frame refused: ${String(error)}`);
+          process.exit(0);
+        }
+      }
+    }).catch((error) => {
+      log(`frame write failed: ${String(error)}`);
+    }).finally(() => writes.delete(write));
+    writes.add(write);
+  });
+  connection.on("Runtime.bindingCalled", (params, from) => {
+    if (from !== sessionId || params.name !== binding || ending) return;
+    try {
+      const event = JSON.parse(String(params.payload));
+      appendLine(inputFile, event);
+    } catch {
+    }
+  });
+  connection.on("Page.frameNavigated", (params, from) => {
+    if (from !== sessionId) return;
+    const frame = params.frame;
+    if (frame.parentId !== void 0) return;
+    appendLine(eventsFile, { type: "navigated", t: Date.now(), origin: originOf(frame.url) });
+    send2("Page.startScreencast", { format: "jpeg", quality: request.quality, everyNthFrame: 1 }).catch(() => {
+    });
+  });
+  const endTake = async (reason) => {
+    if (ending) return;
+    ending = true;
+    log(`browser gone: ${reason}`);
+    await Promise.allSettled([...writes]);
+    const endMs = Math.max(lastFrameTs, Date.now() - 0);
+    appendLine(eventsFile, { type: "ended", t: Date.now(), reason });
+    writeStats();
+    try {
+      transition(dir, "stop", { owner_pid: process.pid, ending: { end_ms: endMs, reason, partial: true } }, (state) => state?.phase === "recording");
+    } catch {
+      process.exit(0);
+    }
+    try {
+      await finalizeTake(dir);
+    } catch (error) {
+      log(`finalize after browser loss failed: ${String(error)}`);
+    }
+    process.exit(0);
+  };
+  connection.on("Target.detachedFromTarget", (params) => {
+    if (params.sessionId === sessionId) void endTake("page_closed");
+  });
+  connection.on("Target.targetDestroyed", (params) => {
+    if (params.targetId === targetId) void endTake("page_closed");
+  });
+  connection.on("Inspector.detached", () => void endTake("page_closed"));
+  connection.onClose(() => void endTake("browser_closed"));
+  const writeStats = () => {
+    const cpu = process.cpuUsage(cpuStart);
+    rssPeak = Math.max(rssPeak, process.memoryUsage().rss);
+    try {
+      atomicWrite(path4.join(dir, "alive.json"), JSON.stringify({ t: Date.now(), pid: process.pid, frames: frameCount, last_frame_ts: lastFrameTs, cpu_user_ms: cpu.user / 1e3, cpu_system_ms: cpu.system / 1e3, rss_peak_bytes: rssPeak }));
+    } catch {
+    }
+  };
+  const heartbeat = setInterval(writeStats, 1e3);
+  process.on("SIGTERM", () => {
+    if (ending) return;
+    ending = true;
+    clearInterval(heartbeat);
+    void (async () => {
+      await Promise.race([send2("Page.stopScreencast").catch(() => {
+      }), sleep2(1e3)]);
+      await Promise.allSettled([...writes]);
+      writeStats();
+      log("stopped");
+      process.exit(0);
+    })();
+  });
+  try {
+    if (sessionId !== void 0) await connection.send("Target.setDiscoverTargets", { discover: true });
+    await send2("Page.enable");
+    await send2("Runtime.enable");
+    await send2("Runtime.addBinding", { name: binding });
+    await send2("Page.addScriptToEvaluateOnNewDocument", { source: inputListenerSource(binding) });
+    await send2("Runtime.evaluate", { expression: inputListenerSource(binding) });
+    const info = await send2("Runtime.evaluate", {
+      expression: "JSON.stringify({origin: location.origin, width: innerWidth, height: innerHeight, dpr: devicePixelRatio})",
+      returnByValue: true
+    });
+    atomicWrite(path4.join(dir, "page.json"), info.result.value);
+    await send2("Page.startScreencast", { format: "jpeg", quality: request.quality, everyNthFrame: 1 });
+  } catch (error) {
+    return fail("browser_unreachable", `Could not start the screencast: ${error instanceof Error ? error.message : String(error)}`, "Check that the page is open and not a DevTools or extension page.");
+  }
+  writeStats();
+  setTimeout(() => {
+    if (!firstFrameWritten && !existsSync2(path4.join(dir, "state.json"))) {
+      fail("browser_unreachable", "No frame arrived from the browser.", "Check that the page is open, then run tellclip record again.");
+    }
+  }, firstFrameTimeoutMs);
+}
+
+// src/ci/finalize.ts
+var encodeSettings = {
+  codec: "libx264",
+  preset: process.env.TELLCLIP_X264_PRESET ?? "veryfast",
+  crf: Number(process.env.TELLCLIP_X264_CRF ?? 16),
+  keyframe_seconds: 2,
+  timescale: 9e4
+};
+function run(binary, args, timeoutMs) {
+  return new Promise((resolve2, reject) => {
+    execFile3(binary, args, { timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) reject(Object.assign(error, { stderr }));
+      else resolve2({ stdout, stderr });
+    });
+  });
+}
+function sessionDir(dir) {
+  return path5.join(dir, "session");
+}
+function marksLines(dir) {
+  return readJsonLines(path5.join(dir, "marks.jsonl"));
+}
+function writeMarksFile(dir) {
+  const session = sessionDir(dir);
+  let base;
+  try {
+    base = JSON.parse(readFileSync6(path5.join(session, "frames.json"), "utf8")).take;
+  } catch {
+    return void 0;
+  }
+  const marks = buildMarks(marksLines(dir), base.first_ms, base.duration_s, { title: base.title, partial: base.partial, endedReason: base.ended_reason });
+  writeFileSync4(path5.join(session, "marks.json"), JSON.stringify(marks, null, 2) + "\n");
+  return marks;
+}
+async function finalizeTake(dir) {
+  const state = readState(dir);
+  if (state?.phase !== "stopping" || state.ending === void 0) {
+    throw cliError("take_not_stopping", "The take is not being stopped.", void 0, 1);
+  }
+  const started = Date.now();
+  const { reason, partial } = state.ending;
+  const frames = orderFrames(readJsonLines(path5.join(dir, "frames.jsonl"))).filter((frame) => existsSync3(frameFile(dir, frame)));
+  if (frames.length === 0) {
+    const error = { code: "no_frames", message: "The take has no frames.", next: "Check that the browser page was visible to the recorder." };
+    transition(dir, "no_frames", { error, owner_pid: void 0 });
+    throw cliError(error.code, error.message, error.next, 1);
+  }
+  const firstMs = frames[0].ts;
+  const endMs = Math.max(state.ending.end_ms, frames.at(-1).ts + 1);
+  const durationSeconds = (endMs - firstMs) / 1e3;
+  const page = readPage(dir);
+  const width = frames[0].w - frames[0].w % 2;
+  const height = frames[0].h - frames[0].h % 2;
+  const viewport = { width: page?.width ?? frames[0].vw ?? width, height: page?.height ?? frames[0].vh ?? height };
+  const dpr = page?.dpr ?? Math.round(width / viewport.width * 100) / 100;
+  const session = sessionDir(dir);
+  rmSync2(session, { recursive: true, force: true });
+  mkdirSync4(session, { recursive: true });
+  const listFile = path5.join(dir, "frames.ffconcat");
+  writeFileSync4(listFile, concatScript(frames, endMs, (frame) => frameFile(dir, frame)));
+  const display = path5.join(session, "display.mov");
+  const encodeStarted = Date.now();
+  try {
+    await run("ffmpeg", [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-y",
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      listFile,
+      "-fps_mode",
+      "passthrough",
+      // Slice-threaded swscale: the full→limited, BT.601→BT.709 conversion
+      // was 3× the encoder's cost single-threaded (ci/CLIMB.md round 1).
+      "-filter_threads",
+      String(Math.max(1, Math.min(8, availableParallelism()))),
+      "-vf",
+      `scale=${width}:${height}:flags=bicubic:in_range=full:out_range=limited:in_color_matrix=bt601:out_color_matrix=bt709,format=yuv420p`,
+      "-c:v",
+      encodeSettings.codec,
+      "-preset",
+      encodeSettings.preset,
+      "-crf",
+      String(encodeSettings.crf),
+      "-bf",
+      "0",
+      "-force_key_frames",
+      `expr:gte(t,n_forced*${encodeSettings.keyframe_seconds})`,
+      "-color_primaries",
+      "bt709",
+      "-color_trc",
+      "bt709",
+      "-colorspace",
+      "bt709",
+      "-color_range",
+      "tv",
+      "-video_track_timescale",
+      String(encodeSettings.timescale),
+      "-movflags",
+      "+faststart",
+      "-an",
+      "-f",
+      "mp4",
+      display
+    ], 30 * 6e4);
+  } catch (error) {
+    const missing = error.code === "ENOENT";
+    const stderr = String(error.stderr ?? "").trim().split("\n").slice(-3).join(" ");
+    updateState(dir, { owner_pid: void 0 }, "stopping");
+    throw missing ? cliError("ffmpeg_missing", "ffmpeg is not on PATH.", "Install it, e.g. sudo apt-get install -y ffmpeg, then run tellclip stop again.", 1) : cliError("encode_failed", `ffmpeg could not encode the take: ${stderr}`, "Run tellclip stop again; the frames are kept.", 1);
+  }
+  const encodeMs = Date.now() - encodeStarted;
+  let probedDuration;
+  try {
+    const { stdout } = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", display], 6e4);
+    probedDuration = Number(stdout.trim());
+  } catch {
+  }
+  const raw = readJsonLines(path5.join(dir, "input.jsonl"));
+  const input = buildInput(raw, firstMs, endMs);
+  const moves = raw.filter((event) => event.type === "move" && event.x !== void 0 && event.y !== void 0 && event.t >= firstMs - 1e3 && event.t <= endMs).map((event) => ({ t: Math.max(0, (event.t - firstMs) / 1e3), x: event.x, y: event.y }));
+  const cursor = synthesizeCursor(input, moves, durationSeconds, defaultCursorOptions);
+  const title = state.title ?? "Recording";
+  const take = { first_ms: firstMs, end_ms: endMs, duration_s: durationSeconds, partial, ended_reason: reason, title };
+  const metadata = {
+    version: 1,
+    width,
+    height,
+    fps: 30,
+    source: "cdp",
+    devicePixelRatio: dpr,
+    viewport,
+    durationSeconds: Math.round(durationSeconds * 1e3) / 1e3,
+    cursorEdit: { isVisible: true },
+    recorder: { name: "tellclip-cli", version: cliVersion }
+  };
+  const stats = frameStats(frames, durationSeconds);
+  let recorderStats;
+  try {
+    recorderStats = JSON.parse(readFileSync6(path5.join(dir, "alive.json"), "utf8"));
+  } catch {
+  }
+  writeFileSync4(path5.join(session, "metadata.json"), JSON.stringify(metadata, null, 2) + "\n");
+  writeFileSync4(path5.join(session, "cursor.json"), JSON.stringify(cursor) + "\n");
+  writeFileSync4(path5.join(session, "input.json"), JSON.stringify(input) + "\n");
+  writeFileSync4(path5.join(session, "frames.json"), JSON.stringify({
+    take,
+    stats,
+    encode: { ...encodeSettings, ms: encodeMs, probed_duration_s: probedDuration },
+    recorder: recorderStats,
+    frames: frames.map((frame) => ({ t: Math.round(frame.ts - firstMs) / 1e3, ts: frame.ts, recv: frame.recv, bytes: frame.bytes, w: frame.w, h: frame.h }))
+  }) + "\n");
+  const marks = writeMarksFile(dir);
+  const displayBytes = statSync2(display).size;
+  const result = {
+    ok: true,
+    take: state.take,
+    session_dir: session,
+    frames: frames.length,
+    duration_s: Math.round(durationSeconds * 100) / 100,
+    display_duration_s: probedDuration,
+    size: { width, height },
+    bytes: displayBytes,
+    pixel_ratio: dpr,
+    viewport,
+    marks: marks.marks.length,
+    input_events: input.length,
+    partial,
+    ended_reason: reason,
+    fps_busy: stats.fps_busy,
+    stop_ms: Date.now() - started
+  };
+  if (dpr < 2) result.warnings = [pixelRatioWarning(dpr)];
+  transition(dir, "encoded", { stop: result, owner_pid: void 0 });
+  return result;
+}
+function frameFile(dir, frame) {
+  return path5.join(dir, "frames", `f${String(frame.i).padStart(7, "0")}.jpg`);
+}
+
+// src/ci/commands.ts
+var sleep3 = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
+var recorderExitTimeoutMs = 5e3;
+var concurrentStopWaitMs = 10 * 6e4;
+function ciTakeTakes(command, now = Date.now()) {
+  if (!isTakeCommand(command)) return false;
+  const dir = currentTakeDir();
+  const state = dir === void 0 ? void 0 : readState(dir);
+  if (dir === void 0 || state === void 0) return false;
+  const since = Date.parse(state.started_at ?? state.updated_at);
+  const ageMs = Number.isFinite(since) ? now - since : Number.POSITIVE_INFINITY;
+  return routeTakeCommand(command, { phase: state.phase, ageMs, hasSession: existsSync4(sessionDir(dir)) }) === "ci_take";
+}
+function isTakeCommand(command) {
+  return command === "mark" || command === "title" || command === "summary" || command === "stop" || command === "share";
+}
+function forgetFinishedCiTake() {
+  const dir = currentTakeDir();
+  if (dir === void 0) return;
+  const phase = readState(dir)?.phase;
+  if (phase === "recording" || phase === "stopping") return;
+  clearCurrentTake(path6.basename(dir));
+}
+function neverStarted(state) {
+  const error = state?.error ?? {};
+  return cliError(
+    error.code ?? "browser_unreachable",
+    `The take never started${error.message ? `: ${error.message}` : "."}`,
+    "Nothing was recorded. Fix tellclip record --cdp first.",
+    1
+  );
+}
+function parsePoint(text) {
+  const parts = text.split(",");
+  const [x, y] = parts.map((part) => Number(part));
+  if (parts.length !== 2 || !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) {
+    throw new UsageError(`--at must be 'x,y' with fractions 0-1 of the viewport, got '${text}'.`);
+  }
+  return { x, y };
+}
+function markTake(text, options, now = Date.now()) {
+  if (!text.trim()) throw new UsageError('mark needs a label: tellclip mark "Open the projects page".');
+  const dir = currentTakeDir();
+  const state = dir === void 0 ? void 0 : readState(dir);
+  if (dir === void 0 || state === void 0) {
+    if (state === void 0 && dir !== void 0) throw neverStarted(state);
+    throw cliError("no_take", "No take is recording; the mark was not saved.", "Run tellclip record --cdp <port> first.", 1);
+  }
+  if (state.phase === "failed" && !existsSync4(sessionDir(dir))) throw neverStarted(state);
+  if (!acceptsMarks(state.phase)) {
+    throw cliError("no_take", `The take is ${state.phase}; the mark was not saved.`, "Marks go in while a take is recording.", 1);
+  }
+  const line = { kind: "mark", text: text.trim() };
+  if (options.t !== void 0) {
+    const t2 = Number(options.t);
+    if (!Number.isFinite(t2) || t2 < 0) throw new UsageError("--t must be seconds from the start of the take.");
+    line.t = t2;
+  }
+  const epoch = options.epochMs === void 0 ? now : Number(options.epochMs);
+  if (!Number.isFinite(epoch)) throw new UsageError("--epoch-ms must be a Unix time in milliseconds.");
+  line.epoch_ms = epoch;
+  if (options.at !== void 0) line.at = parsePoint(options.at);
+  appendLine(path6.join(dir, "marks.jsonl"), line);
+  const steps = readFileSync7(path6.join(dir, "marks.jsonl"), "utf8").split("\n").filter((row) => row.includes('"kind":"mark"')).length;
+  const t = state.first_frame_ms === void 0 ? void 0 : Math.round(Math.max(0, epoch - firstFrameEpoch(dir, state)) / 10) / 100;
+  return { ok: true, take: state.take, step: steps, ...line.t !== void 0 ? { t: line.t } : t === void 0 ? {} : { t } };
+}
+function firstFrameEpoch(dir, state) {
+  try {
+    const line = readFileSync7(path6.join(dir, "frames.jsonl"), "utf8").split("\n", 1)[0];
+    return JSON.parse(line).ts;
+  } catch {
+    return state.first_frame_ms ?? Date.now();
+  }
+}
+function setTakeContent(kind, text) {
+  const value = text.trim();
+  if (!value) throw new UsageError(`${kind} needs text.`);
+  if (kind === "title" && value.length > 200) throw new UsageError("Title must contain 1\u2013200 characters.");
+  if (kind === "summary" && value.length > 600) throw new UsageError("Summary must contain 1\u2013600 characters.");
+  const dir = currentTakeDir();
+  const state = dir === void 0 ? void 0 : readState(dir);
+  if (dir === void 0 || state === void 0) throw cliError("no_take", `No take; the ${kind} was not saved.`, "Run tellclip record --cdp <port> first.", 1);
+  if (!acceptsContent(state.phase)) throw cliError("take_uploaded", `The take is ${state.phase}; the ${kind} was not saved.`, "Set the title and summary before tellclip share.", 1);
+  appendLine(path6.join(dir, "marks.jsonl"), { kind, text: value, epoch_ms: Date.now() });
+  return { ok: true, take: state.take, [kind]: value };
+}
+async function waitForExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (isAlive(pid)) {
+    if (Date.now() > deadline) return false;
+    await sleep3(25);
+  }
+  return true;
+}
+function lastActivity(dir) {
+  let latest;
+  try {
+    const alive = JSON.parse(readFileSync7(path6.join(dir, "alive.json"), "utf8"));
+    latest = Math.max(alive.t ?? 0, alive.last_frame_ts ?? 0) || void 0;
+  } catch {
+  }
+  return latest;
+}
+async function stopTake(now = Date.now()) {
+  const dir = currentTakeDir();
+  if (dir === void 0) throw cliError("no_take", "No take to stop.", "Run tellclip record --cdp <port> first.", 1);
+  for (; ; ) {
+    const state = readState(dir);
+    const action = decideStop(state?.phase ?? null, isAlive(state?.phase === "recording" ? state.recorder_pid : state?.owner_pid), existsSync4(path6.join(sessionDir(dir), "display.mov")));
+    switch (action.kind) {
+      case "no_take":
+      case "unreachable":
+        throw neverStarted(state);
+      case "report":
+        if (state?.phase === "failed" && state.stop === void 0) throw neverStarted(state);
+        return { ...state.stop ?? {}, ok: true, already_stopped: true, phase: state.phase };
+      case "wait": {
+        const deadline = Date.now() + concurrentStopWaitMs;
+        while (readState(dir)?.phase === "stopping" && isAlive(readState(dir)?.owner_pid) && Date.now() < deadline) await sleep3(100);
+        continue;
+      }
+      case "resume_finalize": {
+        if (!claimOwner(dir, "stopping")) continue;
+        return finalizeTake(dir);
+      }
+      case "finalize": {
+        const recorderAlive = action.recorderAlive;
+        const ending = recorderAlive ? { end_ms: now, reason: "stop", partial: false } : { end_ms: lastActivity(dir) ?? now, reason: "recorder_lost", partial: true };
+        try {
+          transition(dir, "stop", { owner_pid: process.pid, ending }, (current) => current?.phase === "recording");
+        } catch (error) {
+          if (error instanceof TransitionRefused) continue;
+          throw error;
+        }
+        if (recorderAlive && state?.recorder_pid !== void 0) {
+          try {
+            process.kill(state.recorder_pid, "SIGTERM");
+          } catch {
+          }
+          if (!await waitForExit(state.recorder_pid, recorderExitTimeoutMs)) {
+            try {
+              process.kill(state.recorder_pid, "SIGKILL");
+            } catch {
+            }
+          }
+        }
+        return finalizeTake(dir);
+      }
+    }
+  }
+}
+
+// src/ci/share.ts
+import { createWriteStream, existsSync as existsSync5, readFileSync as readFileSync9, statSync as statSync3, writeFileSync as writeFileSync5, mkdirSync as mkdirSync5 } from "node:fs";
+import { open as open2 } from "node:fs/promises";
+import path7 from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+init_version();
+
+// src/ci/comment.ts
+import { readFileSync as readFileSync8 } from "node:fs";
+function sanitizeName(name) {
+  const cleaned = name.trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+  return cleaned || "clip";
+}
+function pullRequestNumber(env, readEvent = (file) => readFileSync8(file, "utf8")) {
+  const fromRef = /^refs\/pull\/(\d+)\//.exec(env.GITHUB_REF ?? "");
+  if (fromRef) return Number(fromRef[1]);
+  if (env.GITHUB_EVENT_PATH) {
+    try {
+      const event = JSON.parse(readEvent(env.GITHUB_EVENT_PATH));
+      const number = event.pull_request?.number ?? event.number;
+      if (Number.isInteger(number)) return number;
+    } catch {
+    }
+  }
+  return void 0;
+}
+function clipKeyFor(env, name, takeName, readEvent) {
+  const repository = env.GITHUB_REPOSITORY?.trim();
+  if (!repository) return takeName;
+  const pr = pullRequestNumber(env, readEvent);
+  const scope = pr !== void 0 ? `pr-${pr}` : sanitizeName(env.GITHUB_REF_NAME ?? "run");
+  return `${repository}/${scope}/${sanitizeName(name)}`;
+}
+function formatClock(seconds) {
+  const total = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor(total % 3600 / 60);
+  const rest = String(total % 60).padStart(2, "0");
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${rest}` : `${minutes}:${rest}`;
+}
+var inline = (text) => text.replace(/\s+/g, " ").replace(/</g, "&lt;").trim();
+var altText = (text) => inline(text).replace(/[[\]]/g, "");
+function failureSentence(code) {
+  switch (code) {
+    case "browser_unreachable":
+      return "No clip: Tellclip could not reach the browser.";
+    case "no_credentials":
+      return "Clip skipped: this run has no Tellclip credentials (fork pull request).";
+    case "upload_failed":
+    case "network_error":
+      return "No clip: upload failed.";
+    case "no_take":
+    case "no_frames":
+      return "No clip: nothing was recorded.";
+    case "ffmpeg_missing":
+      return "No clip: ffmpeg is not installed on the runner.";
+    case "take_too_large":
+      return "No clip: the recording is over the 30-minute or 1 GB limit.";
+    default:
+      return `No clip: ${code}.`;
+  }
+}
+function renderComment(input) {
+  const lines = [`<!-- tellclip:${sanitizeName(input.name)} -->`];
+  const title = inline(input.title) || "Recording";
+  const outcome = input.outcome;
+  if (outcome.kind === "no_clip") {
+    lines.push(`### ${title}`, failureSentence(outcome.code));
+    return lines.join("\n") + "\n";
+  }
+  if (outcome.kind === "failed") {
+    lines.push(`### ${title}`, `Clip failed to render (${inline(outcome.code)}). Recording kept; re-run to retry.`);
+    return lines.join("\n") + "\n";
+  }
+  const heading = [title];
+  if (outcome.durationSeconds !== void 0) heading.push(formatClock(outcome.durationSeconds));
+  heading.push(`${outcome.steps.length} ${outcome.steps.length === 1 ? "step" : "steps"}`);
+  lines.push(`### ${heading.join(" \xB7 ")}`);
+  const thumbnail = outcome.thumbnailUrl;
+  if (outcome.link && thumbnail) lines.push(`[![${altText(title)}](${thumbnail})](${outcome.link})`);
+  else if (outcome.link) lines.push(`[Watch the clip](${outcome.link})`);
+  else if (thumbnail) lines.push(`![${altText(title)}](${thumbnail})`);
+  if (outcome.steps.length > 0) {
+    lines.push(outcome.steps.map((step) => `${formatClock(step.start_s)} ${inline(step.text)}`).join(" \xB7 "));
+  }
+  if (outcome.status !== "ready") lines.push("Still rendering. The link shows the clip when it is ready.");
+  if (outcome.partial) {
+    lines.push(outcome.lastStep ? `The recording ended early, after step ${outcome.lastStep}.` : "The recording ended early.");
+  }
+  return lines.join("\n") + "\n";
+}
+
+// src/ci/share.ts
+var sessionFiles = ["display.mov", "metadata.json", "cursor.json", "input.json", "marks.json"];
+var maxTakeBytes = 1e9;
+var maxTakeSeconds = 30 * 60;
+var decideAgain = {};
+var defaultDeps = {
+  fetch: (...args) => fetch(...args),
+  env: process.env,
+  sleep: (ms) => new Promise((resolve2) => setTimeout(resolve2, ms)),
+  backoffMs: [1e3, 3e3, 9e3],
+  pollMs: 2e3
+};
+function parseShareArgs(args) {
+  const options = { waitSeconds: 180, captions: "track", tier: "standard" };
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    const value = () => {
+      const next = args[index + 1];
+      if (next === void 0) throw new UsageError(`${argument} requires a value.`);
+      index += 1;
+      return next;
+    };
+    switch (argument) {
+      case "--name":
+        options.name = value();
+        break;
+      case "--out":
+        options.out = value();
+        break;
+      case "--comment-file":
+        options.commentFile = value();
+        break;
+      case "--wait": {
+        const seconds = Number(value());
+        if (!Number.isFinite(seconds) || seconds < 0) throw new UsageError("--wait needs seconds, e.g. 180.");
+        options.waitSeconds = seconds;
+        break;
+      }
+      case "--captions": {
+        const mode = value();
+        if (mode !== "burned" && mode !== "track") throw new UsageError("--captions must be burned or track.");
+        options.captions = mode;
+        break;
+      }
+      case "--tier": {
+        const tier = value();
+        if (tier !== "standard" && tier !== "high" && tier !== "preview") throw new UsageError("--tier must be standard, high or preview.");
+        options.tier = tier;
+        break;
+      }
+      case "--strict":
+        break;
+      default:
+        throw new UsageError(`Unknown share option ${argument}. Use --name, --out, --comment-file, --wait, --captions, --tier.`);
+    }
+  }
+  return options;
+}
+var ApiError = class extends Error {
+  constructor(status, code, message, next) {
+    super(message);
+    this.status = status;
+    this.code = code;
+    this.next = next;
+  }
+};
+function retryable(error) {
+  return !(error instanceof ApiError) || error.status === 0 || error.status >= 500;
+}
+async function withRetries(deps, body) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await body();
+    } catch (error) {
+      if (attempt >= deps.backoffMs.length || !retryable(error)) throw error;
+      await deps.sleep(deps.backoffMs[attempt]);
+    }
+  }
+}
+function client() {
+  return { name: "tellclip-cli", version: cliVersion };
+}
+async function shareTake(options, partialDeps = {}) {
+  const deps = { ...defaultDeps, ...partialDeps };
+  const dir = currentTakeDir();
+  const takeName = dir === void 0 ? "no-take" : path7.basename(dir);
+  const name = sanitizeName(options.name ?? deps.env.GITHUB_JOB ?? "clip");
+  const clipKey = clipKeyFor(deps.env, name, takeName);
+  const timings = {};
+  let title = dir !== void 0 ? titleOf(dir) : "Recording";
+  let outcome = { kind: "no_clip", code: "no_take" };
+  const commentPath = options.commentFile === void 0 ? void 0 : path7.resolve(options.commentFile);
+  const writeComment = () => {
+    if (commentPath === void 0) return;
+    mkdirSync5(path7.dirname(commentPath), { recursive: true });
+    writeFileSync5(commentPath, renderComment({ name, title, outcome }));
+  };
+  try {
+    if (dir === void 0) throw cliError("no_take", "No take to share.", "Run tellclip record --cdp and tellclip stop first.", 1);
+    const result = await shareInner(dir, options, deps, clipKey, timings, (next) => {
+      outcome = next;
+    });
+    title = titleOf(dir);
+    return { ...result, comment_path: commentPath ?? null };
+  } catch (error) {
+    if (error instanceof EmitAndExit) {
+      const code = error.payload.error?.code ?? "share_failed";
+      if (outcome.kind !== "failed") outcome = { kind: "no_clip", code };
+      if (commentPath) error.payload.comment_path = commentPath;
+    }
+    throw error;
+  } finally {
+    writeComment();
+  }
+}
+function titleOf(dir) {
+  try {
+    return JSON.parse(readFileSync9(path7.join(sessionDir(dir), "marks.json"), "utf8")).title ?? "Recording";
+  } catch {
+    try {
+      return readState(dir)?.title ?? JSON.parse(readFileSync9(path7.join(dir, "request.json"), "utf8")).title ?? "Recording";
+    } catch {
+      return "Recording";
+    }
+  }
+}
+function credentials(env, base) {
+  const key = env.TELLCLIP_API_KEY?.trim();
+  if (key) return key;
+  try {
+    if (env.TELLCLIP_API_KEY === void 0 && env.CI !== "true") return uploadToken(base);
+  } catch {
+  }
+  throw cliError("no_credentials", "This run has no Tellclip credentials; nothing was uploaded.", "Set TELLCLIP_API_KEY from a repository secret. Fork pull requests get no secrets.", 1);
+}
+async function shareInner(dir, options, deps, clipKey, timings, setOutcome) {
+  const waitDeadline = Date.now() + options.waitSeconds * 1e3;
+  for (; ; ) {
+    const state = readState(dir);
+    const action = decideShare(state?.phase ?? null, isAlive(state?.owner_pid), existsSync5(path7.join(sessionDir(dir), "display.mov")));
+    switch (action.kind) {
+      case "no_take":
+      case "not_recorded": {
+        const error = state?.error ?? {};
+        throw cliError(error.code ?? "no_take", error.message ?? "The take has no recording.", error.next, 1);
+      }
+      case "stop_first": {
+        const started = Date.now();
+        await stopTake();
+        timings.stop = Date.now() - started;
+        continue;
+      }
+      case "wait_stop":
+        await deps.sleep(250);
+        continue;
+      case "busy":
+        if (Date.now() >= waitDeadline) throw cliError("share_in_progress", "Another tellclip share is uploading this take.", "Wait for it to finish; its output has the link.", 1);
+        await deps.sleep(1e3);
+        continue;
+      case "report":
+        return reportStored(state, setOutcome);
+      case "poll":
+        return pollRender(dir, state, options, deps, timings, waitDeadline, setOutcome);
+      case "upload": {
+        const result = await uploadAndSubmit(dir, state, options, deps, clipKey, timings, waitDeadline, setOutcome);
+        if (result === decideAgain) continue;
+        return result;
+      }
+    }
+  }
+}
+function reportStored(state, setOutcome) {
+  const result = state.share?.result ?? {};
+  const outcome = state.share?.outcome;
+  if (outcome !== void 0) setOutcome(outcome);
+  return { ...result, ok: true, deduplicated: true };
+}
+async function api(deps, base, token, method, route, body) {
+  return withRetries(deps, async () => {
+    let response;
+    try {
+      response = await deps.fetch(`${base}${route}`, {
+        method,
+        redirect: "error",
+        headers: { authorization: `Bearer ${token}`, ...body === void 0 ? {} : { "content-type": "application/json" } },
+        ...body === void 0 ? {} : { body: JSON.stringify(body) },
+        signal: AbortSignal.timeout(6e4)
+      });
+    } catch (error) {
+      throw new ApiError(0, "network_error", `Could not reach ${base}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = payload.error ?? {};
+      throw new ApiError(response.status, error.code ?? `http_${response.status}`, error.message ?? `HTTP ${response.status} from ${route}.`, error.next);
+    }
+    return payload;
+  });
+}
+async function putBytes(deps, url, bytes) {
+  return withRetries(deps, async () => {
+    let response;
+    try {
+      response = await deps.fetch(url, { method: "PUT", body: new Uint8Array(bytes), redirect: "error", signal: AbortSignal.timeout(3e4 + Math.ceil(bytes.length / 1e6) * 2e3) });
+    } catch (error) {
+      throw new ApiError(0, "network_error", error instanceof Error ? error.message : String(error));
+    }
+    await response.body?.cancel().catch(() => {
+    });
+    if (!response.ok) throw new ApiError(response.status, "upload_failed", `Storage answered HTTP ${response.status}.`);
+    return response.headers.get("etag") ?? void 0;
+  });
+}
+async function uploadAndSubmit(dir, state, options, deps, clipKey, timings, waitDeadline, setOutcome) {
+  const base = normalizedWebBaseURL(deps.env.TELLCLIP_WEB_BASE_URL);
+  assertUploadOrigin(base);
+  const token = credentials(deps.env, base);
+  const session = sessionDir(dir);
+  const stopped = state.stop ?? {};
+  if ((stopped.duration_s ?? 0) > maxTakeSeconds) {
+    throw cliError("take_too_large", `The take is ${Math.round(stopped.duration_s)} s; the limit is 30 minutes.`, void 0, 1);
+  }
+  try {
+    if (state.phase === "uploading") {
+      if (!claimOwner(dir, "uploading")) return decideAgain;
+    } else {
+      transition(dir, "share", { owner_pid: process.pid }, (current) => current?.phase === state.phase);
+    }
+  } catch (error) {
+    if (error instanceof TransitionRefused) return decideAgain;
+    throw error;
+  }
+  const marks = writeMarksFile(dir);
+  let sessionId = typeof state.share?.session_id === "string" ? state.share.session_id : void 0;
+  try {
+    if (sessionId !== void 0) {
+      const existing = await api(deps, base, token, "GET", `/api/render-sessions/${sessionId}`).catch(() => void 0);
+      if (existing === void 0 || existing.status === "failed") sessionId = void 0;
+    }
+    if (sessionId === void 0) {
+      const files = sessionFiles.map((file) => ({ name: file, bytes: statSync3(path7.join(session, file)).size }));
+      const total = files.reduce((sum, file) => sum + file.bytes, 0);
+      if (total > maxTakeBytes) throw cliError("take_too_large", `The take is ${(total / 1e6).toFixed(0)} MB; the limit is 1 GB.`, void 0, 1);
+      let started = Date.now();
+      const created = await api(deps, base, token, "POST", "/api/render-sessions", { files, client: client() });
+      timings.create_session = Date.now() - started;
+      if (typeof created.session_id !== "string" || !Array.isArray(created.uploads)) throw cliError("bad_response", "The render service returned an invalid session.", void 0, 1);
+      sessionId = created.session_id;
+      started = Date.now();
+      const completed = [];
+      for (const target of created.uploads) {
+        const file = path7.join(session, target.name);
+        if (target.method === "put") {
+          await putBytes(deps, target.url, readFileSync9(file));
+          completed.push({ name: target.name });
+        } else {
+          const etags = [];
+          const handle = await open2(file, "r");
+          try {
+            const size = (await handle.stat()).size;
+            for (let part = 0; part < target.part_urls.length; part += 1) {
+              const start = part * target.part_bytes;
+              const length = Math.max(0, Math.min(target.part_bytes, size - start));
+              const bytes = Buffer.alloc(length);
+              await handle.read(bytes, 0, length, start);
+              const etag = await putBytes(deps, target.part_urls[part], bytes);
+              etags.push(etag ?? "");
+            }
+          } finally {
+            await handle.close();
+          }
+          completed.push({ name: target.name, upload_id: target.upload_id, etags });
+        }
+      }
+      timings.upload = Date.now() - started;
+      started = Date.now();
+      await api(deps, base, token, "POST", `/api/render-sessions/${sessionId}/complete`, { files: completed, client: client() });
+      timings.complete = Date.now() - started;
+      updateState(dir, { share: { ...state.share ?? {}, session_id: sessionId, clip_key: clipKey } });
+    }
+  } catch (error) {
+    const failure2 = error instanceof EmitAndExit ? error.payload.error : error instanceof ApiError && error.status >= 400 ? { code: error.code, message: error.message, next: error.next } : { code: "upload_failed", message: error instanceof Error ? error.message : String(error), next: "Run tellclip share again; finished parts are not kept, the recording is." };
+    try {
+      transition(dir, "upload_failed", { error: failure2, owner_pid: void 0 });
+    } catch {
+    }
+    throw cliError(String(failure2.code ?? "upload_failed"), String(failure2.message ?? "Upload failed."), failure2.next, 1);
+  }
+  const content = takeContent(dir);
+  let job;
+  const submitted = Date.now();
+  try {
+    job = await api(deps, base, token, "POST", "/api/renders", {
+      session_id: sessionId,
+      clip_key: clipKey,
+      edit: "auto",
+      captions: options.captions,
+      output: { tier: options.tier },
+      ...content
+    });
+  } catch (error) {
+    const failure2 = error instanceof ApiError ? { code: error.code, message: error.message, next: error.next } : { code: "upload_failed", message: String(error) };
+    try {
+      transition(dir, "upload_failed", { error: failure2, owner_pid: void 0 });
+    } catch {
+    }
+    throw cliError(failure2.code, failure2.message, failure2.next ?? "Run tellclip share again; the upload is reused.", 1);
+  }
+  timings.submit = Date.now() - submitted;
+  const renderId = job.render_id ?? job.job_id;
+  if (typeof renderId !== "string") throw cliError("bad_response", "The render service returned no render id.", void 0, 1);
+  const fresh = transition(dir, "uploaded", {
+    owner_pid: void 0,
+    share: { session_id: sessionId, clip_key: clipKey, render_id: renderId, submitted_at: submitted, steps: marks?.marks.length ?? 0 }
+  });
+  return pollRender(dir, fresh, options, deps, timings, waitDeadline, setOutcome, job);
+}
+function renderStatusRecord(job) {
+  return {
+    render_id: job.render_id ?? null,
+    clip_id: job.clip_id ?? null,
+    link: job.link ?? null,
+    status: job.status ?? null,
+    error: job.error ?? null
+  };
+}
+function takeContent(dir) {
+  let title = readState(dir)?.title;
+  let summary;
+  for (const line of marksLines(dir)) {
+    if (line.kind === "title" && typeof line.text === "string") title = line.text;
+    if (line.kind === "summary" && typeof line.text === "string") summary = line.text;
+  }
+  return { ...title?.trim() ? { title: title.trim() } : {}, ...summary?.trim() ? { summary: summary.trim() } : {} };
+}
+async function download(deps, url, file, base, token) {
+  const sameOrigin = new URL(url, base).origin === new URL(base).origin;
+  await withRetries(deps, async () => {
+    const response = await deps.fetch(new URL(url, base).toString(), {
+      ...sameOrigin ? { headers: { authorization: `Bearer ${token}` } } : {},
+      signal: AbortSignal.timeout(3e5)
+    }).catch((error) => {
+      throw new ApiError(0, "network_error", String(error));
+    });
+    if (!response.ok || response.body === null) throw new ApiError(response.status, "download_failed", `HTTP ${response.status} for ${new URL(url, base).pathname}`);
+    mkdirSync5(path7.dirname(file), { recursive: true });
+    await pipeline(Readable.fromWeb(response.body), createWriteStream(file));
+  });
+}
+async function pollRender(dir, state, options, deps, timings, waitDeadline, setOutcome, first) {
+  const base = normalizedWebBaseURL(deps.env.TELLCLIP_WEB_BASE_URL);
+  const token = credentials(deps.env, base);
+  const share = state.share ?? {};
+  if (typeof share.render_id !== "string") throw cliError("bad_response", "No render is stored for this take.", "Run tellclip share again.", 1);
+  const route = `/api/renders/${encodeURIComponent(share.render_id)}`;
+  const shareStarted = waitDeadline - options.waitSeconds * 1e3;
+  const seen = {};
+  const pollStarted = Date.now();
+  let job = first ?? await api(deps, base, token, "GET", route);
+  for (; ; ) {
+    const stage = job.status === "rendering" && job.stack_status ? job.stack_status : job.status;
+    if (stage && seen[stage] === void 0) seen[stage] = Date.now();
+    if (terminalRenderStatuses.has(job.status ?? "") || Date.now() >= waitDeadline) break;
+    await deps.sleep(deps.pollMs);
+    try {
+      job = await api(deps, base, token, "GET", route);
+    } catch (error) {
+      if (Date.now() >= waitDeadline) break;
+      if (!(error instanceof ApiError) || error.status !== 0) throw cliError(error instanceof ApiError ? error.code : "network_error", String(error.message), void 0, 1);
+    }
+  }
+  timings.wait = Date.now() - pollStarted;
+  const order = ["queued", "preparing", "planning", "rendering", "finalizing", "ingesting"];
+  const end = seen.ready ?? seen.failed ?? Date.now();
+  const stages = {};
+  const seenOrdered = order.filter((name) => seen[name] !== void 0);
+  seenOrdered.forEach((name, index) => {
+    stages[name] = (seen[seenOrdered[index + 1]] ?? end) - seen[name];
+  });
+  if (seen.ready !== void 0) timings.ready = seen.ready - shareStarted;
+  const status = job.status ?? "unknown";
+  try {
+    writeFileSync5(path7.join(dir, "render-status.json"), JSON.stringify(renderStatusRecord(job), null, 2));
+  } catch {
+  }
+  const steps = (job.edit?.steps ?? []).map((step) => ({ text: step.text ?? step.title ?? "", start_s: step.start_s ?? 0 }));
+  const stopped = state.stop ?? {};
+  const partial = job.edit?.partial ?? stopped.partial ?? false;
+  const out = path7.resolve(options.out ?? path7.join(dir, "clip.mp4"));
+  const stem = out.replace(/\.[^./]+$/, "");
+  const link = job.link ?? void 0;
+  const thumbnailUrl = job.thumbnail_url ?? void 0;
+  const result = {
+    ok: true,
+    clip_id: job.clip_id,
+    link,
+    status,
+    thumbnail_url: thumbnailUrl ?? null,
+    mp4_path: null,
+    duration_s: job.edit?.duration_s ?? job.output?.duration_s,
+    steps: steps.length || share.steps || 0,
+    partial,
+    render_id: share.render_id,
+    clip_key: share.clip_key,
+    timings_ms: { ...timings, stages, cloud: job.timings_ms ?? void 0 }
+  };
+  if (status === "ready") {
+    const started = Date.now();
+    if (job.mp4_url) {
+      try {
+        await download(deps, job.mp4_url, out, base, token);
+        result.mp4_path = out;
+      } catch (error) {
+        result.warnings = [{ code: "download_failed", message: `The clip is ready but the MP4 did not download: ${error instanceof Error ? error.message : String(error)}` }];
+      }
+    }
+    if (thumbnailUrl) await download(deps, thumbnailUrl, `${stem}.jpg`, base, token).catch(() => {
+    });
+    if (job.captions_url) await download(deps, job.captions_url, `${stem}.vtt`, base, token).catch(() => {
+    });
+    result.thumbnail_path = existsSync5(`${stem}.jpg`) ? `${stem}.jpg` : void 0;
+    result.captions_path = existsSync5(`${stem}.vtt`) ? `${stem}.vtt` : void 0;
+    result.timings_ms.download = Date.now() - started;
+    const outcome = { kind: "clip", status: "ready", link, thumbnailUrl, durationSeconds: result.duration_s, steps, partial, lastStep: steps.length };
+    setOutcome(outcome);
+    try {
+      transition(dir, "render_done", { share: { ...share, result, outcome } });
+    } catch {
+    }
+    return result;
+  }
+  if (terminalRenderStatuses.has(status)) {
+    const error = { code: job.error?.code ?? status, message: job.error?.message || `The render is ${status}.` };
+    const outcome = { kind: "failed", code: error.code, link };
+    setOutcome(outcome);
+    try {
+      transition(dir, "render_failed", { error, share: { ...share, render_id: void 0, result, outcome } });
+    } catch {
+    }
+    throw new EmitAndExit({ ...result, ok: false, error: { ...error, next: "Run tellclip share again to retry; the recording is kept." } }, 1);
+  }
+  setOutcome({ kind: "clip", status: "rendering", link, thumbnailUrl, durationSeconds: result.duration_s, steps, partial });
+  return result;
+}
+
+// src/ci/cli.ts
+var takeCommands = /* @__PURE__ */ new Set(["mark", "stop", "title", "summary", "share"]);
+var ciOnlyShareFlags = ["--name", "--out", "--comment-file", "--wait", "--captions", "--tier"];
+function isCiInvocation(command, args, platform, routesToCiTake, lenient) {
+  if (command === recorderSubcommand) return true;
+  if (command === "record") return args.includes("--cdp");
+  if (!takeCommands.has(command)) return false;
+  if (platform !== "darwin") return true;
+  if (command === "share" && args.some((argument) => ciOnlyShareFlags.includes(argument))) return true;
+  return lenient || routesToCiTake(command);
+}
+function lenientFailures(args, env) {
+  return env.CI === "true" && !args.includes("--strict") && env.TELLCLIP_STRICT !== "1";
+}
+function scanArgs(args, valueFlags2, booleanFlags2 = ["--strict"]) {
+  const positional = [];
+  const values = /* @__PURE__ */ new Map();
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (valueFlags2.includes(argument)) {
+      const value = args[index + 1];
+      if (value === void 0) throw new UsageError(`${argument} requires a value.`);
+      values.set(argument, value);
+      index += 1;
+    } else if (booleanFlags2.includes(argument)) {
+      continue;
+    } else if (argument.startsWith("--")) {
+      throw new UsageError(`Unknown option ${argument}.`);
+    } else {
+      positional.push(argument);
+    }
+  }
+  return { positional, values };
+}
+async function dispatch(command, args) {
+  switch (command) {
+    case "record": {
+      const { positional, values } = scanArgs(args, ["--cdp", "--title"]);
+      if (positional.length > 0) throw new UsageError("record --cdp takes no positional arguments.");
+      return startCdpRecording({ cdp: values.get("--cdp"), title: values.get("--title") });
+    }
+    case "mark": {
+      const { positional, values } = scanArgs(args, ["--at", "--t", "--epoch-ms"]);
+      if (positional.length !== 1) throw new UsageError('mark needs one label: tellclip mark "Open the projects page".');
+      return markTake(positional[0], { at: values.get("--at"), t: values.get("--t"), epochMs: values.get("--epoch-ms") });
+    }
+    case "title":
+    case "summary": {
+      const { positional } = scanArgs(args, []);
+      if (positional.length !== 1) throw new UsageError(`${command} needs one text argument.`);
+      return setTakeContent(command, positional[0]);
+    }
+    case "stop":
+      scanArgs(args, [], ["--strict", "--no-auto-edit"]);
+      return stopTake();
+    case "share":
+      return shareTake(parseShareArgs(args));
+    default:
+      throw new UsageError(`Unknown command '${command}'.`);
+  }
+}
+function warn(code, message) {
+  const clean = `${code}: ${message}`.replace(/\r?\n/g, " ").replace(/%/g, "%25");
+  process.stderr.write(`::warning title=Tellclip::${clean}
+`);
+}
+async function runCiCommand(command, args) {
+  if (command === recorderSubcommand) {
+    await runRecorder(args[0]);
+    return;
+  }
+  const lenient = lenientFailures(args, process.env);
+  try {
+    if (!isCiInvocation(command, args, process.platform, ciTakeTakes, false)) {
+      throw cliError("no_take", "No CI recording is open; nothing was done.", "Run tellclip record --cdp <port> first. To reach the Tellclip app, unset CI or set TELLCLIP_STRICT=1.", 1);
+    }
+    const result = await dispatch(command, args);
+    if (process.env.CI === "true") {
+      for (const warning of result.warnings ?? []) warn(warning.code, warning.message);
+    }
+    emit(result, 0);
+  } catch (error) {
+    let payload;
+    let exitCode;
+    if (error instanceof EmitAndExit) {
+      payload = { ...error.payload };
+      exitCode = error.exitCode;
+    } else if (error instanceof UsageError) {
+      payload = { error: { code: "usage", message: error.message } };
+      exitCode = 2;
+    } else {
+      payload = { error: { code: "internal_error", message: error instanceof Error ? error.message : String(error) } };
+      exitCode = 1;
+    }
+    payload.ok = false;
+    const details = payload.error ?? {};
+    if (lenient) {
+      warn(details.code ?? "error", details.message ?? "failed");
+      emit(payload, 0);
+    } else {
+      emit(payload, exitCode);
+    }
+  }
+}
+
+// src/main.ts
+async function run2() {
   const args = process.argv.slice(2);
   const command = args[0];
   if (command === void 0) {
@@ -2931,6 +4886,10 @@ async function run() {
   }
   if (command === "guide") {
     process.stdout.write(agentGuideText + "\n");
+    return;
+  }
+  if (isCiInvocation(command, args.slice(1), process.platform, ciTakeTakes, lenientFailures(args.slice(1), process.env))) {
+    await runCiCommand(command, args.slice(1));
     return;
   }
   if (command === "upload") {
@@ -2961,6 +4920,7 @@ async function run() {
     else await sendAndEmit(spec, endpoint);
     return;
   }
+  if (command === "record") forgetFinishedCiTake();
   await sendAndEmit(spec, await connectOrLaunch());
 }
 async function sendAndEmit(spec, endpoint) {
@@ -2985,7 +4945,7 @@ async function sendAndEmit(spec, endpoint) {
   const result = object;
   emit(result, result.error === void 0 ? 0 : 1);
 }
-run().catch((error) => {
+run2().catch((error) => {
   if (error instanceof UsageError) {
     if (error.showUsage) {
       process.stderr.write(usageText + "\n");

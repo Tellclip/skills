@@ -10,7 +10,7 @@ description: >
   authored transcript, QA, and upload.
   Records real product environments only — a mock needs explicit approval.
 metadata:
-  version: "0.2.9"
+  version: "0.3.0"
 ---
 
 # Recording a product demo with tellclip
