@@ -38,7 +38,7 @@ var cliVersion;
 var init_version = __esm({
   "src/version.ts"() {
     "use strict";
-    cliVersion = true ? "0.3.0" : "dev";
+    cliVersion = true ? "0.3.1" : "dev";
   }
 });
 
@@ -719,14 +719,18 @@ on another Space, minimized, or split across screens), \`browser_gone\` (the
 person closed it; \`stop\` or \`cancel\` the take, then \`open\` again).
 
 Signing in. The capture browser has its own profile and starts signed out.
-Sign in with steps when you were given credentials. Otherwise agree it with
-the person, then \`tellclip browser open <url> --show\` brings the window to
-the front for them, once; the profile remembers.
+Sign-in, verification codes and payment details are for the person to enter.
+In both browser modes, \`type\` and \`fill\` (replace the field's text) return
+\`handoff_required\` for these fields without entering text. Ask the person
+to complete the step themselves and wait, then retry the remaining flow.
+For the capture browser, \`tellclip browser open --show\` shows the current
+page; for \`--own-browser\`, use the existing window in their browser.
+The capture profile remembers sign-ins. Do not use scripts to bypass a handoff.
 
-Own browser. When the flow needs the person's real accounts and they have
-the Tellclip extension in Chrome, \`tellclip browser open --own-browser <url>
-[--allow accounts.google.com,\u2026]\` drives one popup window of their own,
-signed-in Chrome instead; every other command is the same. The window opens
+Own browser. Install the Tellclip extension from the Chrome Web Store in
+Chrome or Dia. For a signed-in flow, \`tellclip browser open --own-browser <url>
+[--allow accounts.google.com]\` drives one popup in the signed-in browser. Use
+\`--browser-name chrome\` or \`--browser-name dia\` to choose a browser. The window opens
 behind their windows; the OS cursor, their focus and their clipboard are left
 alone, as with the capture browser. While it is open, Chrome shows
 "Tellclip started debugging this browser" in all their windows (its Cancel
@@ -740,7 +744,9 @@ so treat it as a safety net, not permission. Enter or Space on a focused
 control is checked the same way. A JavaScript confirm is answered no unless
 the step has \`confirm\` (the row's \`dialogs\` says so). Its take is cropped
 to the page. Without the extension: \`extension_not_connected\` (the first
-connection can take 30 s; Chrome needs a window open); drop \`--own-browser\`.
+connection can take 30 s and the browser needs a window open). Give the person
+the install link, https://chromewebstore.google.com/detail/tellclip/opmcgmgkagfnommibfaedgoggacffjmb,
+and retry after they install it. To use the capture browser, drop \`--own-browser\`.
 
 Limits: one capture browser and one take at a time; one tab (a link that
 opens a new tab is not followed, \`goto\` its URL instead); no steps inside
@@ -1101,6 +1107,7 @@ The edit is not the deliverable; the rendered clip is. Check it:
 - \`tellclip frame <t>\` at each mark time \u2014 right page, right state, nothing
   half-rendered. The default view is the capture (cut to the crop), so it
   verifies content and is what coordinates are read off.
+- \`tellclip frame <t> --view output --native\` saves at native session output size; ordinary output frames cap the long edge at 1920 px. \`--out\` accepts a PNG path or directory, including for one time.
 - \`tellclip frame <t> --view output\` renders that moment the way the
   finished clip shows it \u2014 crop, zoom, blur, highlights, layout, background,
   cursor and camera. Check every zoom, mask and highlight with it before you
@@ -1249,7 +1256,8 @@ var valueOptions = /* @__PURE__ */ new Set([
   "--hold",
   "--title",
   "--summary",
-  "--allow"
+  "--allow",
+  "--browser-name"
 ]);
 var booleanFlags = /* @__PURE__ */ new Set([
   "--system-audio",
@@ -1269,7 +1277,8 @@ var booleanFlags = /* @__PURE__ */ new Set([
   "--record",
   "--stop",
   "--own-browser",
-  "--confirm"
+  "--confirm",
+  "--native"
 ]);
 function parseArgs(args) {
   const parsed = { positional: [], options: /* @__PURE__ */ new Map(), flags: /* @__PURE__ */ new Set() };
@@ -1472,6 +1481,14 @@ function makeRequestSpec(command, args) {
           }
           if (parsed.flags.has("--show")) body.show = true;
           if (parsed.flags.has("--own-browser")) body.own_browser = true;
+          const browserName = parsed.options.get("--browser-name");
+          if (browserName !== void 0) {
+            if (!body.own_browser || browserName !== "chrome" && browserName !== "dia") {
+              throw new UsageError("--browser-name takes chrome or dia and requires --own-browser.");
+            }
+            body.op = "open_in_browser";
+            body.own_browser_name = browserName;
+          }
           const allow = parsed.options.get("--allow");
           if (allow !== void 0) {
             if (!parsed.flags.has("--own-browser")) {
@@ -1531,11 +1548,12 @@ function makeRequestSpec(command, args) {
             throw new UsageError(`browser ${subcommand} needs a target: tellclip browser ${subcommand} e12.`);
           }
           return browserStepSpec({ [subcommand]: parseBrowserTarget(argument) }, parsed);
-        case "type": {
+        case "type":
+        case "fill": {
           if (parsed.positional.length !== 2) {
-            throw new UsageError('browser type needs text: tellclip browser type "Hello".');
+            throw new UsageError(`browser ${subcommand} needs text: tellclip browser ${subcommand} "Hello".`);
           }
-          const step = { type: argument };
+          const step = { [subcommand]: argument };
           const into = parsed.options.get("--into");
           if (into !== void 0) step.into = parseBrowserTarget(into);
           return browserStepSpec(step, parsed);
@@ -1590,7 +1608,7 @@ function makeRequestSpec(command, args) {
           return { method: "POST", path: "/rpc/browser", body: { op: "close" } };
         default:
           throw new UsageError(
-            subcommand === void 0 ? "browser needs a subcommand: open, snapshot, act, click, hover, type, press, scroll, goto, wait, eval, or close." : `Unknown browser subcommand '${subcommand}'. Use open, snapshot, act, click, hover, type, press, scroll, goto, wait, eval, or close.`
+            subcommand === void 0 ? "browser needs a subcommand: open, snapshot, act, click, hover, type, fill, press, scroll, goto, wait, eval, or close." : `Unknown browser subcommand '${subcommand}'. Use open, snapshot, act, click, hover, type, fill, press, scroll, goto, wait, eval, or close.`
           );
       }
     }
@@ -1888,6 +1906,10 @@ function makeRequestSpec(command, args) {
         }
         fields.view = view;
       }
+      if (parsed.flags.has("--native")) {
+        if (view !== "output" || sheet) throw new UsageError("--native requires --view output and cannot be combined with --sheet.");
+        fields.native_output = true;
+      }
       return editSpec("frame", parsed, fields);
     }
     case "cursor": {
@@ -2138,7 +2160,7 @@ async function installSetupApp(source, directory, deps = {}) {
 var permissionNext = "Enable Tellclip under System Settings > Privacy & Security > Screen Recording, then run 'tellclip setup' again.";
 var restartAdvice = "If you already enabled it, restart Tellclip to apply the grant, then run 'tellclip setup' again.";
 var sharingNext = "Sharing needs a sign-in: run 'tellclip login' when you want a link.";
-var readyNext = "Read the file at skill_path now and follow it: Tellclip is ready in this session without a restart. Then ask the person what they want recorded.";
+var readyNext = "Read the file at skill_path now and follow it: Tellclip is ready in this session without a restart. Then, if the person already asked for a recording, record it now with the skill; otherwise ask what they want recorded and record nothing until they say.";
 var appLaunchWaitMs = 15e3;
 var appLaunchPollMs = 250;
 var personPollMs = 2e3;
@@ -2454,12 +2476,13 @@ USAGE
   tellclip mark <label> [--at <x,y>] [--t <seconds> | --epoch-ms <ms>] [--session <s>]
   tellclip stop [--no-auto-edit]
   tellclip cancel
-  tellclip browser open [<url>] [--viewport <W>x<H>] [--show] [--own-browser [--allow <site,\u2026>]]
+  tellclip browser open [<url>] [--viewport <W>x<H>] [--show] [--own-browser [--browser-name chrome|dia] [--allow <sites>]]
   tellclip browser snapshot [--full]
   tellclip browser act [--json <steps> | --file <path>] [--record] [--stop] [--title <text>] [--summary <text>]  # or steps JSON on stdin; --record --stop is a whole take in one call; a step's "zoom": 2 is the clip's one zoom
   tellclip browser click <target>
   tellclip browser hover <target>
   tellclip browser type <text> [--into <target>]
+  tellclip browser fill <text> [--into <target>]                  replace the field's text
   tellclip browser press <key>
   tellclip browser scroll <pixels> [--over <target>]
   tellclip browser scroll --to <target>
@@ -2495,7 +2518,7 @@ USAGE
   tellclip transcript pause <index> [--remove|--restore] [--session <s>]
   tellclip transcript tidy [--no-pauses] [--no-fillers] [--session <s>]
   tellclip edits | marks [--session <s>]
-  tellclip frame <seconds> [<seconds>...] [--view edit|recording|output] [--out <path|dir>] [--session <s>]
+  tellclip frame <seconds> [<seconds>...] [--view edit|recording|output] [--native] [--out <path|dir>] [--session <s>]
   tellclip frame --sheet [<seconds>...] [--view ...]   one picture: a tile per mark, or per time
   tellclip cursor set [--file <path>] [--from-marks] [--session <s>]
   tellclip cursor clear [--session <s>]
@@ -2523,10 +2546,15 @@ Browser single-step commands accept --label <text>, --hold <seconds>,
 --off-camera and --confirm. Targets are refs (e12), role:name (button:Create),
 or x,y (640,300) in viewport CSS pixels.
 
---own-browser drives one window of the person's own, signed-in Chrome through
-the Tellclip extension instead of the capture browser. The agent may open the
-URL's site and the --allow sites only; a click on Delete, Send, Pay and the like
-needs "confirm": true, which you send only after the person said yes.
+In both browser modes, type/fill return handoff_required for sign-in,
+verification-code and payment fields. Ask the person to finish the step,
+wait, then retry the remaining flow. For the capture browser, show it with
+tellclip browser open --show; own-browser uses their existing browser window.
+
+--own-browser drives one window in the person's signed-in Chrome or Dia
+through the Tellclip extension. Use --browser-name chrome or --browser-name dia
+to choose when both are connected. Only the URL's site and the --allow sites
+can open. Get permission before setting "confirm": true for a destructive click.
 
 CI takes (record --cdp): mark, title, summary, stop and share go to the CI take
 while it is open, and always on Linux. With CI=true they exit 0 on failure and

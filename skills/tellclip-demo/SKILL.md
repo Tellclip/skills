@@ -10,7 +10,7 @@ description: >
   authored transcript, QA, and upload.
   Records real product environments only — a mock needs explicit approval.
 metadata:
-  version: "0.3.0"
+  version: "0.3.1"
 ---
 
 # Recording a product demo with tellclip
@@ -162,18 +162,23 @@ diff: `+` new, `-` gone, everything not shown unchanged with its ref still
 valid.
 
 The capture browser has its own profile and remembers sign-ins. It starts
-signed out the first time. Sign in with steps when you were given
-credentials. Otherwise agree it with the person, then
+signed out the first time. Agree a sign-in with the person, then
 `tellclip browser open <url> --show` brings the window to the front for
 them, once.
 
+For `handoff_required` (sign-in, verification code or payment), ask the person to finish the step themselves and wait; show the capture browser with `tellclip browser open --show`, or use the existing window in their browser, then retry the remaining flow without bypassing the handoff.
+
 When the flow needs the person's real accounts and they installed the
-Tellclip extension in Chrome, add `--own-browser` (and `--allow <site,…>`
+Tellclip extension in Chrome or Dia, add `--own-browser` (and `--allow <sites>`
 for a sign-in host) to `browser open`: the same steps then run in one window
-of their own, signed-in Chrome. Only those sites open, and a click on Delete,
+of their signed-in browser. Use `--browser-name chrome` or `--browser-name dia`
+to select a browser. Only those sites open, and a click on Delete,
 Send, Pay and the like needs `"confirm": true`, sent only after the person
-said yes. Close it when done: Chrome shows a debugging bar in all their
-windows while it is open.
+said yes. Close the popup when done. Chrome shows a debugging bar while it is open.
+Without the extension, `browser open --own-browser` returns
+`extension_not_connected`: give the person the install link,
+https://chromewebstore.google.com/detail/tellclip/opmcgmgkagfnommibfaedgoggacffjmb,
+and retry once they added it, or record in the capture browser instead.
 
 ## The human keeps working — never interrupt them
 
